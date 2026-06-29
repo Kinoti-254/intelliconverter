@@ -53,8 +53,11 @@ Recommended layout: Legal Landscape (scale: 86%)
 
 ## Project Structure
 intelliconverter/
+
 ├── main.py          # Entry point and analysis logic
+
 ├── test.xlsx        # Sample spreadsheet for testing
+
 └── README.md        # Documentation
 ---
 
