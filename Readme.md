@@ -59,6 +59,7 @@ intelliconverter/
 ├── test.xlsx        # Sample spreadsheet for testing
 
 └── README.md        # Documentation
+
 ---
 
 ## Roadmap
