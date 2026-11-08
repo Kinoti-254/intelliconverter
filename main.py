@@ -1,8 +1,10 @@
-"""Command-line entry point: python main.py [file] [--sheet NAME] [--paper PAPER] [--explain].
+"""Command-line entry point.
 
-With no arguments it converts test.xlsx in the current folder. The code
-lives in the intelliconverter package; the names below are re-exported so
-existing `import main` usage keeps working.
+    python main.py [file] [--sheet NAME ...] [--paper PAPER] [--explain] [-o PDF]
+
+With no arguments it converts every visible sheet of test.xlsx in the
+current folder. The code lives in the intelliconverter package; the names
+below are re-exported so existing `import main` usage keeps working.
 """
 from intelliconverter.cli import main as run_cli
 from intelliconverter.measure import col_width_to_inches, get_total_table_width

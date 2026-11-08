@@ -1,7 +1,8 @@
-"""The console report: what the layout engine chose, then the PDF export."""
+"""The console report: what the layout engine chose for each sheet, then the PDF export."""
+from intelliconverter.errors import InputError, LayoutError
 from intelliconverter.planner import plan_layout
-from intelliconverter.reader import load_sheet
-from intelliconverter.render import render_pdf
+from intelliconverter.reader import load_workbook_sheets
+from intelliconverter.render import render_document
 
 OUTPUT_PDF = "output.pdf"
 POINTS_PER_INCH = 72
@@ -9,29 +10,82 @@ TOP_CANDIDATES = 5
 WIDTHS_PER_LINE = 6
 
 
-def analyze(filepath, sheet=None, paper=None, explain=False):
-    """Plan the layout of an Excel sheet, print a report and write output.pdf.
+def analyze(filepath, sheet=None, sheets=None, paper=None, explain=False, output=OUTPUT_PDF):
+    """Plan the layout of each sheet, print a report and write one PDF.
 
-    paper:   "A4", "Letter", "Legal" or "A3" to fix the paper; None lets the
-             engine choose (both orientations are always compared).
-    explain: also print the best alternatives and the cost breakdown.
+    sheets:  names of the sheets to convert, in order. `sheet` names a single
+             one. With neither, every visible worksheet is converted and the
+             rest (hidden, chart or empty sheets) are listed as skipped.
+    paper:   "A4", "Letter", "Legal" or "A3" for every sheet; None lets the
+             engine choose per sheet (both orientations are always compared).
+    explain: also print each sheet's best alternatives and cost breakdown.
+    output:  the PDF to write.
 
-    Raises InputError, LayoutError or OutputError (all ConversionError) for
-    problems the user can fix.
+    Each sheet is planned independently. Raises InputError, LayoutError or
+    OutputError (all ConversionError) for problems the user can fix; no PDF
+    is written when any sheet fails.
     """
-    model = load_sheet(filepath, sheet)
-    result = plan_layout(model, paper=paper)
-    plan = result.plan
+    names = sheets or ([sheet] if sheet else None)
+    workbook = load_workbook_sheets(filepath, names)
+    if not workbook.models:
+        raise InputError(f"No sheets to convert in {filepath}: {_describe(workbook.skipped)}.")
+
+    several = len(workbook.models) > 1
+    sections = [(model, _plan(model, paper, several)) for model in workbook.models]
 
     print(f"\n{'='*48}")
     print(f"  IntelliConverter — Layout Report")
     print(f"{'='*48}")
+    if several:
+        titles = ", ".join(model.title for model, _ in sections)
+        print(f"  Sheets  : {len(sections)} ({titles})")
+        _print_skipped(workbook.skipped)
+        print(f"{'='*48}")
+        for index, (model, result) in enumerate(sections):
+            if index:
+                print(f"  {'-'*46}")
+            _print_sheet(model, result, explain, skipped=None)
+        total_pages = sum(result.plan.pages for _, result in sections)
+        print(f"{'='*48}")
+        print(f"  Total   : {len(sections)} sheets, {_plural(total_pages, 'page')}")
+    else:
+        model, result = sections[0]
+        _print_sheet(model, result, explain, skipped=workbook.skipped, divider=True)
+    print(f"{'='*48}\n")
+
+    render_document(sections, output)
+    print(f"✅ PDF saved to: {output}\n")
+
+
+def _plan(model, paper, several):
+    try:
+        return plan_layout(model, paper=paper)
+    except LayoutError as error:
+        if several:
+            raise LayoutError(f"Sheet '{model.title}': {error}") from error
+        raise
+
+
+def _describe(skipped):
+    return ", ".join(f"{name} ({reason})" for name, reason in skipped)
+
+
+def _print_skipped(skipped):
+    if skipped:
+        print(f"  Skipped : {_describe(skipped)}")
+
+
+def _print_sheet(model, result, explain, skipped, divider=False):
+    plan = result.plan
     print(f"  Sheet   : {model.title}")
     print(f"  Columns : {len(model.visible_columns)}")
     print(f"  Rows    : {model.visible_row_count}")
+    if skipped:
+        _print_skipped(skipped)
     _print_hidden_summary(model)
     _print_formula_warning(model)
-    print(f"{'='*48}")
+    if divider:
+        print(f"{'='*48}")
     print(f"  Paper   : {plan.page.name}")
     print(f"  Font    : {plan.font_size:g} pt")
     print(f"  Parts   : {len(plan.bands)}{_parts_note(plan)}")
@@ -43,10 +97,6 @@ def analyze(filepath, sheet=None, paper=None, explain=False):
         _print_candidates(result)
         print(f"  {'-'*46}")
         _print_cost(plan)
-    print(f"{'='*48}\n")
-
-    render_pdf(model, result, OUTPUT_PDF)
-    print(f"✅ PDF saved to: {OUTPUT_PDF}\n")
 
 
 def _plural(count, word):

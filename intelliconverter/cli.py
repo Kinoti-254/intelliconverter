@@ -1,4 +1,4 @@
-"""Command line: python main.py [file] [--sheet NAME] [--paper PAPER] [--explain]."""
+"""Command line: python main.py [file] [--sheet NAME ...] [--paper PAPER] [--explain] [-o PDF]."""
 import argparse
 import sys
 
@@ -14,8 +14,8 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="python main.py",
         description=(
-            "Choose the most readable page layout for an Excel sheet and export "
-            f"{OUTPUT_PDF} to the current folder."
+            "Choose the most readable page layout for each sheet of an Excel "
+            "workbook and export them to one PDF."
         ),
     )
     parser.add_argument(
@@ -24,7 +24,12 @@ def build_parser():
         default=DEFAULT_FILE,
         help=f"the .xlsx file to convert (default: {DEFAULT_FILE})",
     )
-    parser.add_argument("--sheet", help="sheet name (default: the active sheet)")
+    parser.add_argument(
+        "--sheet",
+        action="append",
+        metavar="NAME",
+        help="a sheet to convert; repeat for several (default: every visible sheet)",
+    )
     parser.add_argument(
         "--paper",
         choices=[AUTO] + [name for name, _ in PAPERS],
@@ -32,9 +37,15 @@ def build_parser():
         help="paper size (default: auto, which prefers A4); both orientations are compared",
     )
     parser.add_argument(
+        "-o", "--output",
+        default=OUTPUT_PDF,
+        metavar="PDF",
+        help=f"the PDF to write (default: {OUTPUT_PDF} in the current folder)",
+    )
+    parser.add_argument(
         "--explain",
         action="store_true",
-        help="also show the best alternatives and why this layout was chosen",
+        help="also show each sheet's best alternatives and why its layout was chosen",
     )
     return parser
 
@@ -45,7 +56,7 @@ def main(argv=None):
     _avoid_encoding_crashes()
     paper = None if args.paper == AUTO else args.paper
     try:
-        analyze(args.file, sheet=args.sheet, paper=paper, explain=args.explain)
+        analyze(args.file, sheets=args.sheet, paper=paper, explain=args.explain, output=args.output)
     except ConversionError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1

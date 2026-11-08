@@ -64,12 +64,32 @@ def test_sheet_option(two_sheet_book, capsys):
     assert "Widget" in text and "Total" not in text
 
 
+def test_every_visible_sheet_is_converted_by_default(two_sheet_book, capsys):
+    assert cli.main([str(two_sheet_book)]) == 0
+    out = capsys.readouterr().out
+    assert "  Sheets  : 2 (Summary, Detail)\n" in out
+    text = read_pdf(two_sheet_book.parent / "output.pdf")["text"]
+    assert "Total" in text and "Widget" in text
+
+
+def test_sheet_option_can_be_repeated(two_sheet_book, capsys):
+    assert cli.main([str(two_sheet_book), "--sheet", "Detail", "--sheet", "Summary"]) == 0
+    out = capsys.readouterr().out
+    assert out.index("Sheet   : Detail") < out.index("Sheet   : Summary")
+
+
+def test_output_option(two_sheet_book, capsys):
+    assert cli.main([str(two_sheet_book), "-o", "book.pdf"]) == 0
+    assert (two_sheet_book.parent / "book.pdf").is_file()
+    assert not (two_sheet_book.parent / "output.pdf").exists()
+
+
 def test_help(capsys):
     with pytest.raises(SystemExit) as excinfo:
         cli.main(["--help"])
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
-    assert all(option in out for option in ("--sheet", "--paper", "--explain", "file"))
+    assert all(option in out for option in ("--sheet", "--paper", "--explain", "--output", "file"))
 
 
 class TestExplainAndPaperOptions:

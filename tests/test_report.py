@@ -117,3 +117,90 @@ def test_main_reexports():
     assert main.analyze is report.analyze
     assert main.col_width_to_inches is measure.col_width_to_inches
     assert main.get_total_table_width is measure.get_total_table_width
+
+
+# --- Several sheets -----------------------------------------------------------
+
+def _three_sheets(workdir):
+    wb = openpyxl.Workbook()
+    summary = wb.active
+    summary.title = "Summary"
+    summary.append(["Total", 10])
+    detail = wb.create_sheet("Detail")
+    detail.append(["Item", "Qty"])
+    detail.append(["Widget", 7])
+    wb.create_sheet("Blank")
+    old = wb.create_sheet("Old")
+    old["A1"] = "x"
+    old.sheet_state = "hidden"
+    wb.save(workdir / "three.xlsx")
+    return "three.xlsx"
+
+
+def test_every_visible_sheet_is_converted_by_default(workdir, capsys):
+    report.analyze(_three_sheets(workdir))
+    out = capsys.readouterr().out
+    assert "  Sheets  : 2 (Summary, Detail)\n" in out
+    assert "  Skipped : Blank (empty), Old (hidden sheet)\n" in out
+    assert "  Sheet   : Summary\n" in out and "  Sheet   : Detail\n" in out
+    assert "  Total   : 2 sheets, 2 pages\n" in out
+    text = read_pdf(workdir / "output.pdf")["text"]
+    assert "Total" in text and "Widget" in text
+
+
+def test_sheets_can_be_listed(workdir, capsys):
+    report.analyze(_three_sheets(workdir), sheets=["Detail", "Summary"])
+    out = capsys.readouterr().out
+    assert out.index("Sheet   : Detail") < out.index("Sheet   : Summary")
+    assert "Skipped" not in out
+
+
+def test_one_sheet_from_a_workbook_uses_the_single_sheet_report(workdir, capsys):
+    report.analyze(_three_sheets(workdir), sheet="Detail")
+    out = capsys.readouterr().out
+    assert "Sheets  :" not in out and "Total   :" not in out
+    assert "  Sheet   : Detail\n" in out
+
+
+def test_skipped_sheets_are_listed_in_the_single_sheet_report(workdir, capsys):
+    wb = openpyxl.Workbook()
+    wb.active.append(["Data", 1])
+    wb.create_sheet("Empty")
+    wb.save(workdir / "two.xlsx")
+    report.analyze("two.xlsx")
+    out = capsys.readouterr().out
+    assert "  Skipped : Empty (empty)\n" in out
+    assert "Sheets  :" not in out
+
+
+def test_a_workbook_with_nothing_to_convert_is_an_error(workdir):
+    wb = openpyxl.Workbook()
+    wb.create_sheet("Also empty")
+    wb.save(workdir / "empty.xlsx")
+    from intelliconverter.errors import InputError
+    import pytest
+    with pytest.raises(InputError) as excinfo:
+        report.analyze("empty.xlsx")
+    assert "No sheets to convert in empty.xlsx" in str(excinfo.value)
+    assert "Sheet (empty), Also empty (empty)" in str(excinfo.value)
+
+
+def test_a_layout_error_names_the_sheet_when_converting_several(workdir):
+    wb = openpyxl.Workbook()
+    wb.active.append(["Fine"])
+    huge = wb.create_sheet("Huge")
+    huge.append(["Text"])
+    huge.append(["word " * 6000])
+    wb.save(workdir / "huge.xlsx")
+    from intelliconverter.errors import LayoutError
+    import pytest
+    with pytest.raises(LayoutError) as excinfo:
+        report.analyze("huge.xlsx")
+    assert str(excinfo.value).startswith("Sheet 'Huge': A cell is too long")
+    assert not (workdir / "output.pdf").exists()
+
+
+def test_output_path_can_be_chosen(workdir, capsys):
+    report.analyze("test.xlsx", output="report.pdf")
+    assert (workdir / "report.pdf").is_file()
+    assert "PDF saved to: report.pdf" in capsys.readouterr().out
