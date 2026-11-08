@@ -57,7 +57,7 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python main.py [file] [--sheet NAME]
+python main.py [file] [--sheet NAME] [--plan]
 ```
 
 | Command | What it does |
@@ -65,10 +65,29 @@ python main.py [file] [--sheet NAME]
 | `python main.py` | Analyses `test.xlsx` in the current folder |
 | `python main.py sales.xlsx` | Analyses the active sheet of `sales.xlsx` |
 | `python main.py sales.xlsx --sheet "Q3 Summary"` | Analyses a named sheet |
+| `python main.py sales.xlsx --plan` | Previews the new layout engine's plan (see below); writes no PDF |
 | `python main.py --help` | Shows the options |
 
 The report is printed and `output.pdf` is written to the current folder,
 replacing any existing `output.pdf`.
+
+### New layout engine (preview)
+
+`--plan` shows what the new layout engine would choose. It is a preview: the
+PDF still uses the current layout until the engine becomes the default.
+
+The engine measures every visible cell in the PDF's font and simulates the
+printed table for each combination of paper (A4, Letter, Legal, A3),
+orientation and font size (7 to 11 pt). Columns are sized from their content;
+long text wraps; tables too wide for the page are split into column bands,
+with the first column repeated in each. Each option gets a cost made of named
+parts (small font, extra paper, bands, wrapping, empty space, paper type), and
+the cheapest wins. The preview prints the plan, the best alternatives and the
+cost breakdown, so you can see why a layout was chosen.
+
+For sheets over 500 rows, alternatives are compared using an even sample of
+rows (their page counts are marked as estimates); the chosen plan is then
+worked out exactly for every row.
 
 ### Errors and limits
 
@@ -155,7 +174,9 @@ intelliconverter/
 │   ├── errors.py              # Errors reported to the user without a traceback
 │   ├── reader.py              # Checks the file and reads a sheet into a SheetModel
 │   ├── measure.py             # Column widths to inches
-│   ├── layout.py              # Page layouts and the layout score
+│   ├── layout.py              # Current page layouts and the layout score
+│   ├── textmetrics.py         # Measures and wraps text in the PDF font
+│   ├── planner.py             # New layout engine (preview with --plan)
 │   ├── report.py              # Prints the analysis report, then exports the PDF
 │   └── render.py              # Builds the PDF with ReportLab
 ├── tests/
@@ -164,10 +185,13 @@ intelliconverter/
 │   ├── test_reader.py
 │   ├── test_measure.py
 │   ├── test_layout.py
+│   ├── test_textmetrics.py
+│   ├── test_planner.py
+│   ├── test_planner_reference.py   # Reference sheets with expected layouts
 │   ├── test_report.py
 │   ├── test_render.py
 │   └── test_known_defects.py
-├── main.py                    # Entry point (python main.py [file] [--sheet NAME])
+├── main.py                    # Entry point (python main.py [file] [--sheet NAME] [--plan])
 ├── excel_to_pdf.py            # Kept for existing imports; points to render.py
 ├── test.xlsx                  # Sample spreadsheet
 ├── requirements.txt           # Runtime dependencies
@@ -186,8 +210,8 @@ intelliconverter/
 | Input validation and size limits | Done |
 | Choose the file and sheet | Done (command line) |
 | Convert units to inches | Done |
-| Generate layout candidates | Basic: five fixed page widths |
-| Score and select best layout | Basic: width fit only |
+| Generate layout candidates | Basic: five fixed page widths (new engine in preview: 72 candidates) |
+| Score and select best layout | Basic: width fit only (new engine in preview: content, pages, bands) |
 | Export PDF with chosen layout | Basic: equal column widths, fixed font |
 | Conversion report (why this layout was chosen) | Not started |
 | FastAPI web interface | Planned |
@@ -200,7 +224,9 @@ The numbers follow the original technical assessment.
 - **1** - Tables wider than every page get no recommendation ("Best layout: None").
 - **4** - Cell content is ignored, so long text in a narrow column is not accounted for.
 - **5** - Row count and page height do not affect the result.
-- **6b** - "Legal Landscape" is rendered on Letter paper (11 in) instead of Legal (14 in).
+
+Issues 1, 4 and 5 are solved in the new layout engine (`--plan`) and will
+close when it becomes the default.
 - **6c** - A table too wide for every page produces a PDF labelled "Layout: None" with zero-width columns.
 - **6d** - Measured column widths are ignored in the PDF; every column gets the same width.
 - **6e** - Numbers are printed as Python floats, for example `23.0` instead of `23`.
@@ -208,7 +234,8 @@ The numbers follow the original technical assessment.
 Fixed (each now has a regression test): 2 hidden columns counted in the width,
 3 grouped column ranges measured as one column, 6a PDF always built from
 `test.xlsx`, 7 formatting on empty cells adding width, 8 formulas read as text,
-9 raw errors for bad files and crashes on non-UTF-8 consoles.
+9 raw errors for bad files and crashes on non-UTF-8 consoles, 6b Legal
+Landscape rendered on Letter paper.
 
 ---
 
