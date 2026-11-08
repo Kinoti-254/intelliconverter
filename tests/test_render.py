@@ -255,3 +255,91 @@ def test_defect_6c_a_table_too_wide_for_the_page_prints_usable_columns(tmp_path,
     render.render_pdf(model, plan_layout(model), str(out))
     assert "None" not in read_pdf(out)["text"]
     assert all(width > 0 for table in captured_tables for width in table["col_widths"])
+
+
+# --- Several sheets in one PDF ------------------------------------------------------
+
+from pypdf import PdfReader  # noqa: E402
+
+from intelliconverter.reader import load_workbook_sheets  # noqa: E402
+
+
+@pytest.fixture
+def mixed_document(tmp_path):
+    """A wide sheet (landscape), a tall narrow sheet (portrait) and a tiny one."""
+    wb = openpyxl.Workbook()
+    wide_ws = wb.active
+    wide_ws.title = "Wide"
+    wide_ws.append(["Account"] + [f"Period {p:02d}" for p in range(1, 12)])
+    for a in range(40):
+        wide_ws.append([f"ACC-{a:04d}"] + [1234567.89 + a * p for p in range(1, 12)])
+    tall_ws = wb.create_sheet("Tall")
+    tall_ws.append(["Item"])
+    for i in range(300):
+        tall_ws.append([f"Inventory item {i}"])
+    tiny = wb.create_sheet("Tiny")
+    tiny.append(["Note"])
+    tiny.append(["Done"])
+    path = tmp_path / "mixed.xlsx"
+    wb.save(path)
+
+    sheets = load_workbook_sheets(path)
+    sections = [(model, plan_layout(model)) for model in sheets.models]
+    out = tmp_path / "mixed.pdf"
+    render.render_document(sections, str(out))
+    return {"sections": sections, "pdf": read_pdf(out), "path": out}
+
+
+def test_each_sheet_is_planned_independently(mixed_document):
+    pages = [result.plan.page for _, result in mixed_document["sections"]]
+    assert pages[0].orientation == "Landscape"
+    assert pages[1].orientation == "Portrait"
+
+
+def test_each_page_has_its_own_sheets_paper_size(mixed_document):
+    expected = []
+    for _, result in mixed_document["sections"]:
+        page = result.plan.page
+        expected += [(page.width, page.height)] * result.plan.pages
+    sizes = mixed_document["pdf"]["sizes"]
+    assert len(sizes) == len(expected)
+    assert all(a == pytest.approx(b) for a, b in zip(sizes, expected))
+
+
+def test_each_sheet_starts_a_new_page_with_its_own_title(mixed_document):
+    page_texts = mixed_document["pdf"]["page_texts"]
+    first = 0
+    for model, result in mixed_document["sections"]:
+        assert model.title in page_texts[first]
+        assert result.plan.page.name in page_texts[first]
+        first += result.plan.pages
+
+
+def test_footer_numbers_pages_per_sheet_and_for_the_document(mixed_document):
+    page_texts = mixed_document["pdf"]["page_texts"]
+    total = len(page_texts)
+    document_page = 0
+    for model, result in mixed_document["sections"]:
+        for sheet_page in range(1, result.plan.pages + 1):
+            text = page_texts[document_page]
+            document_page += 1
+            assert f"{model.title}  |  Page {sheet_page} of {result.plan.pages}" in text
+            assert f"Document page {document_page} of {total}" in text
+
+
+def test_bookmarks_point_to_each_sheets_first_page(mixed_document):
+    reader = PdfReader(str(mixed_document["path"]))
+    marks = [(entry.title, reader.get_destination_page_number(entry) + 1) for entry in reader.outline]
+    expected, first = [], 1
+    for model, result in mixed_document["sections"]:
+        expected.append((model.title, first))
+        first += result.plan.pages
+    assert marks == expected
+
+
+def test_a_single_sheet_footer_has_no_document_page_count(tmp_path):
+    model = load_sheet(SAMPLE_XLSX)
+    out = tmp_path / "one.pdf"
+    render.render_document([(model, plan_layout(model))], str(out))
+    text = read_pdf(out)["text"]
+    assert "Page 1 of 1" in text and "Document page" not in text

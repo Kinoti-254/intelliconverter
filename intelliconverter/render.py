@@ -7,13 +7,20 @@ PDF always matches the plan the report describes.
 
 Each page is one table (header row plus that page's rows). A table too
 wide for the page is printed as consecutive parts (bands), each starting on
-a new page and repeating the first column. The first page carries a title
-block; every page has a footer with the page number.
+a new page and repeating the first column.
+
+Several sheets can go into one PDF (render_document). Each sheet is a
+section with its own plan, so pages can change size and orientation between
+sheets. Each section starts on a new page with a title block and a bookmark;
+every page has a footer with the sheet's page number (and, with several
+sheets, the document page number).
 """
 import datetime as dt
 
 from reportlab.lib import colors
-from reportlab.platypus import BaseDocTemplate, Flowable, Frame, PageBreak, PageTemplate, Table, TableStyle
+from reportlab.platypus import (
+    BaseDocTemplate, Flowable, Frame, NextPageTemplate, PageBreak, PageTemplate, Table, TableStyle,
+)
 
 from intelliconverter.errors import OutputError
 from intelliconverter.planner import (
@@ -49,35 +56,39 @@ def build_pdf(filepath, output_path, sheet=None, paper=None):
 
 
 def render_pdf(model, result, output_path):
-    """Write the PDF for `model` following result.plan exactly."""
-    plan, texts = result.plan, result.measured
-    page = plan.page
+    """Write the PDF for one sheet, following result.plan exactly."""
+    render_document([(model, result)], output_path)
+
+
+def render_document(sections, output_path):
+    """Write one PDF from several sheets: a list of (SheetModel, PlanResult).
+
+    Each sheet keeps its own plan: paper, orientation, font and parts.
+    """
+    first_page = sections[0][1].plan.page
     doc = BaseDocTemplate(
         output_path,
-        pagesize=(page.width, page.height),
+        pagesize=(first_page.width, first_page.height),
         leftMargin=MARGIN_LEFT,
         rightMargin=MARGIN_RIGHT,
         topMargin=MARGIN_TOP,
         bottomMargin=MARGIN_BOTTOM + FOOTER_HEIGHT,  # the footer sits in this strip
-        title=model.title,
+        title=", ".join(model.title for model, _ in sections),
         author="IntelliConverter",
     )
-    # No frame padding: the planner's page geometry is the frame, exactly.
-    frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height,
-                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id="body")
 
-    right_aligned = numeric_columns(model)
-    story = [TitleBlock(model.title, _subtitle(model, plan), doc.width)]
-    page_bands = []  # which band each page shows, for the footer
-    for band_index, band in enumerate(plan.bands):
-        bounds = list(band.page_starts) + [len(band.row_heights)]
-        for start, end in zip(bounds, bounds[1:]):
-            if page_bands:
-                story.append(PageBreak())
-            story.append(_page_table(band, start, end, texts, right_aligned, plan.font_size))
-            page_bands.append(band_index)
+    story, templates, pages = [], [], []
+    for index, (model, result) in enumerate(sections):
+        template_id = f"sheet{index}"
+        templates.append(_page_template(template_id, result.plan.page))
+        if index:
+            story += [NextPageTemplate(template_id), PageBreak()]
+        story += _section_story(index, model, result, pages)
 
-    doc.addPageTemplates([PageTemplate(id="pages", frames=[frame], onPage=_footer(model, plan, page_bands))])
+    footer = _footer(sections, pages)
+    for template in templates:
+        template.onPage = footer
+    doc.addPageTemplates(templates)
     try:
         doc.build(story)
     except OSError as error:
@@ -86,6 +97,51 @@ def render_pdf(model, result, output_path):
             f"Could not write {output_path}. If it is open in another program, "
             f"close it and try again.{reason}"
         ) from error
+
+
+def _page_template(template_id, page):
+    width = page.width - MARGIN_LEFT - MARGIN_RIGHT
+    height = page.height - MARGIN_TOP - MARGIN_BOTTOM - FOOTER_HEIGHT
+    # No frame padding: the planner's page geometry is the frame, exactly.
+    frame = Frame(MARGIN_LEFT, MARGIN_BOTTOM + FOOTER_HEIGHT, width, height,
+                  leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0, id=template_id)
+    return PageTemplate(id=template_id, frames=[frame], pagesize=(page.width, page.height))
+
+
+def _section_story(index, model, result, pages):
+    """Flowables for one sheet. Appends (section, band, sheet page) to `pages` per page."""
+    plan, texts = result.plan, result.measured
+    width = plan.page.width - MARGIN_LEFT - MARGIN_RIGHT
+    right_aligned = numeric_columns(model)
+    story = [
+        SectionStart(f"sheet{index}", model.title),
+        TitleBlock(model.title, _subtitle(model, plan), width),
+    ]
+    sheet_page = 0
+    for band_index, band in enumerate(plan.bands):
+        bounds = list(band.page_starts) + [len(band.row_heights)]
+        for start, end in zip(bounds, bounds[1:]):
+            if sheet_page:
+                story.append(PageBreak())
+            story.append(_page_table(band, start, end, texts, right_aligned, plan.font_size))
+            sheet_page += 1
+            pages.append((index, band_index, sheet_page))
+    return story
+
+
+class SectionStart(Flowable):
+    """Takes no space; marks where a sheet starts with a PDF bookmark."""
+
+    def __init__(self, key, title):
+        super().__init__()
+        self.key, self.title = key, title
+
+    def wrap(self, available_width, available_height):
+        return 0, 0
+
+    def draw(self):
+        self.canv.bookmarkPage(self.key)
+        self.canv.addOutlineEntry(self.title, self.key, level=0)
 
 
 def numeric_columns(model):
@@ -177,23 +233,32 @@ def _subtitle(model, plan):
     return "  |  ".join(parts)
 
 
-def _footer(model, plan, page_bands):
-    letters = plan.column_letters
+def _footer(sections, pages):
+    """Footer for every page: sheet name, sheet page, part, and document page."""
+    total = len(pages)
 
     def draw(canvas, doc):
-        band_index = page_bands[doc.page - 1] if doc.page <= len(page_bands) else 0
-        parts = [model.title, f"Page {doc.page} of {plan.pages}"]
+        if doc.page > total:
+            return
+        section, band_index, sheet_page = pages[doc.page - 1]
+        model, result = sections[section]
+        plan = result.plan
+        parts = [model.title, f"Page {sheet_page} of {plan.pages}"]
         if len(plan.bands) > 1:
+            letters = plan.column_letters
             columns = plan.bands[band_index].columns[1:]
             parts.append(
                 f"Part {band_index + 1} of {len(plan.bands)}: "
                 f"columns {letters[columns[0]]} to {letters[columns[-1]]}"
             )
+        if len(sections) > 1:
+            parts.append(f"Document page {doc.page} of {total}")
+        width = plan.page.width - MARGIN_LEFT - MARGIN_RIGHT
         canvas.saveState()
         canvas.setFont(BODY_FONT, FOOTER_SIZE)
         canvas.setFillColor(MUTED)
-        text = _fit("  |  ".join(parts), BODY_FONT, FOOTER_SIZE, doc.width)
-        canvas.drawCentredString(doc.pagesize[0] / 2, MARGIN_BOTTOM + 3, text)
+        canvas.drawCentredString(plan.page.width / 2, MARGIN_BOTTOM + 3,
+                                 _fit("  |  ".join(parts), BODY_FONT, FOOTER_SIZE, width))
         canvas.restoreState()
 
     return draw
