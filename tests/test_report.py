@@ -1,19 +1,16 @@
-"""Characterisation tests for the console report, the reader and main.py."""
-import os
-import shutil
-import subprocess
-import sys
+"""Tests for the console report (intelliconverter.report) and main.py's exports.
 
+The command-line entry point itself is tested in test_cli.py.
+"""
 import openpyxl
 from openpyxl.utils import get_column_letter
 
 import main
 from intelliconverter import layout, measure, report
-from intelliconverter.reader import load_active_sheet
-from tests.conftest import GOLDEN_DIR, REPO_ROOT, SAMPLE_XLSX
+from tests.conftest import GOLDEN_DIR, read_pdf
 
 # Console output of the original code for `python main.py` on test.xlsx,
-# recorded before the restructure. It includes the PDF confirmation lines.
+# recorded before the Phase 0 restructure. It includes the PDF confirmation.
 GOLDEN_REPORT = (GOLDEN_DIR / "test_xlsx_report.txt").read_text(encoding="utf-8")
 
 
@@ -38,12 +35,45 @@ def test_recommends_smallest_page_the_table_fits(workdir, save_workbook, capsys)
     assert "Best layout : A4 Landscape" in capsys.readouterr().out
 
 
-def test_reader_returns_the_active_sheet(save_workbook):
+def test_counts_and_hidden_line_for_a_sheet_with_hidden_content(workdir, save_workbook, capsys):
     wb = openpyxl.Workbook()
-    wb.active.title = "First"
-    wb.create_sheet("Second")
-    wb.active = 1
-    assert load_active_sheet(save_workbook(wb)).title == "Second"
+    ws = wb.active
+    for row in range(1, 5):
+        ws.append([f"r{row}c{col}" for col in range(1, 6)])
+    ws.column_dimensions["B"].hidden = True
+    ws.column_dimensions["C"].hidden = True
+    ws.row_dimensions[4].hidden = True
+    report.analyze(save_workbook(wb))
+    out = capsys.readouterr().out
+    assert "  Columns : 3\n" in out
+    assert "  Rows    : 3\n" in out
+    assert "  Hidden  : 2 columns, 1 row (not included)\n" in out
+
+
+def test_no_hidden_line_when_nothing_is_hidden(workdir, capsys):
+    report.analyze("test.xlsx")
+    assert "Hidden" not in capsys.readouterr().out
+
+
+def test_sheet_can_be_chosen(workdir, save_workbook, capsys):
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = "first"
+    wb.create_sheet("Second")["A1"] = "second"
+    report.analyze(save_workbook(wb), sheet="Second")
+    assert "Sheet   : Second" in capsys.readouterr().out
+
+
+def test_defect_6a_pdf_contains_the_analysed_file(workdir, capsys):
+    # Regression test: before Phase 1 the PDF was always built from test.xlsx.
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Inventory"
+    ws.append(["Item", "Qty"])
+    ws.append(["Widget", 7])
+    wb.save(workdir / "inventory.xlsx")
+    report.analyze("inventory.xlsx")
+    text = read_pdf(workdir / "output.pdf")["text"]
+    assert "Inventory" in text and "Widget" in text
 
 
 def test_main_reexports_the_original_names():
@@ -52,21 +82,3 @@ def test_main_reexports_the_original_names():
     assert main.LAYOUTS is layout.LAYOUTS
     assert main.col_width_to_inches is measure.col_width_to_inches
     assert main.get_total_table_width is measure.get_total_table_width
-
-
-def test_running_main_py_prints_original_output_and_writes_pdf(tmp_path):
-    shutil.copy(SAMPLE_XLSX, tmp_path / "test.xlsx")
-    # UTF-8 output is forced because the report contains emoji; see the
-    # known defect about non-UTF-8 consoles.
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "main.py")],
-        cwd=tmp_path,
-        env=env,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.replace("\r\n", "\n") == GOLDEN_REPORT
-    assert (tmp_path / "output.pdf").is_file()

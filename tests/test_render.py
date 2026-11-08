@@ -1,8 +1,10 @@
-"""Characterisation tests for PDF generation (intelliconverter.render).
+"""Tests for PDF generation (intelliconverter.render).
 
-These pin what the existing PDF code does today: page sizes, page count,
-table contents, column widths and the confirmation output. Behaviour that is
-a known defect is tested in test_known_defects.py instead.
+These pin what the PDF code does: page sizes, page count, table contents,
+column widths and the confirmation output. Since Phase 1 the PDF is built
+from a SheetModel, so hidden rows and columns are left out and formula
+cells show their saved values. Behaviour that is a known defect is tested
+in test_known_defects.py instead.
 """
 import time
 
@@ -15,14 +17,14 @@ import excel_to_pdf
 from intelliconverter import render
 from intelliconverter.layout import LAYOUTS
 from intelliconverter.measure import get_total_table_width
-from intelliconverter.reader import load_active_sheet
+from intelliconverter.reader import ColumnInfo, SheetModel, load_sheet
 from intelliconverter.report import analyze
 from tests.conftest import SAMPLE_XLSX, read_pdf
 
 INCH = 72  # points
 
 # Sample file: best layout is A4 Portrait (7.7 in) at the fill shown in the report.
-SAMPLE_SCALE = get_total_table_width(load_active_sheet(SAMPLE_XLSX)) / 7.7 * 100
+SAMPLE_SCALE = get_total_table_width(load_sheet(SAMPLE_XLSX)) / 7.7 * 100
 
 
 def _sheet_with_widths(widths):
@@ -144,14 +146,63 @@ def test_long_tables_paginate(tmp_path):
     assert "300" in pdf["text"]
 
 
-def test_no_data_prints_a_warning_and_writes_nothing(tmp_path, monkeypatch, capsys):
-    # A real sheet always yields at least one row, so the empty branch is
-    # reached here by stubbing the extractor.
-    monkeypatch.setattr(render, "extract_sheet_data", lambda ws: [])
+def test_no_data_prints_a_warning_and_writes_nothing(tmp_path, capsys):
+    # load_sheet() rejects sheets with no visible data, so this branch is
+    # reached with a hand-built model whose only row is hidden.
+    model = SheetModel(
+        title="Sheet1",
+        columns=[ColumnInfo(index=1, letter="A", width=8.43, hidden=False)],
+        hidden_rows=frozenset({1}),
+        cells=[["x"]],
+        uncached_formula_count=0,
+    )
     out = tmp_path / "out.pdf"
-    render.build_pdf(SAMPLE_XLSX, str(out), "A4 Portrait", 50)
+    render.render_pdf(model, str(out), "A4 Portrait", 50)
     assert capsys.readouterr().out == "⚠️  No data found in sheet.\n"
     assert not out.exists()
+
+
+class TestWhatThePdfContains:
+    def test_hidden_rows_and_columns_are_left_out(self, tmp_path, captured_tables, capsys):
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(["Name", "Secret", "City"])
+        ws.append(["Sam", "s1", "Nairobi"])
+        ws.append(["Hidden row", "s2", "Nowhere"])
+        ws.column_dimensions["B"].hidden = True
+        ws.row_dimensions[3].hidden = True
+        src = tmp_path / "hidden.xlsx"
+        wb.save(src)
+        out = tmp_path / "out.pdf"
+        render.build_pdf(src, str(out), "A4 Portrait", 50)
+        assert captured_tables[0]["data"] == [["Name", "City"], ["Sam", "Nairobi"]]
+        text = read_pdf(out)["text"]
+        assert "Secret" not in text and "Hidden row" not in text
+        assert "Rows: 2 | Columns: 2" in text
+
+    def test_formula_cells_show_saved_values_not_formulas(self, tmp_path, captured_tables, capsys):
+        wb = openpyxl.Workbook()
+        wb.active["A1"] = 2
+        wb.active["A2"] = "=A1*3"
+        src = tmp_path / "formula.xlsx"
+        wb.save(src)  # no saved result, so the cell is blank
+        render.build_pdf(src, str(tmp_path / "out.pdf"), "A4 Portrait", 50)
+        assert captured_tables[0]["data"] == [["2"], [""]]
+
+    def test_a_named_sheet_can_be_rendered(self, tmp_path, captured_tables, capsys):
+        wb = openpyxl.Workbook()
+        wb.active["A1"] = "first"
+        wb.create_sheet("Second")["A1"] = "second"
+        src = tmp_path / "two.xlsx"
+        wb.save(src)
+        render.build_pdf(src, str(tmp_path / "out.pdf"), "A4 Portrait", 50, sheet="Second")
+        assert captured_tables[0]["data"] == [["second"]]
+
+    def test_render_pdf_and_build_pdf_give_the_same_file(self, tmp_path, deterministic_pdfs, capsys):
+        from_file, from_model = tmp_path / "file.pdf", tmp_path / "model.pdf"
+        render.build_pdf(SAMPLE_XLSX, str(from_file), "A4 Portrait", SAMPLE_SCALE)
+        render.render_pdf(load_sheet(SAMPLE_XLSX), str(from_model), "A4 Portrait", SAMPLE_SCALE)
+        assert from_file.read_bytes() == from_model.read_bytes()
 
 
 @pytest.mark.parametrize(
@@ -163,10 +214,8 @@ def test_no_data_prints_a_warning_and_writes_nothing(tmp_path, monkeypatch, caps
     ],
 )
 def test_analyze_exports_pdf_on_the_recommended_page(workdir, capsys, widths, layout_name, page_size):
-    # analyze() always converts test.xlsx (defect 6a), so the sheet under
-    # test is saved as test.xlsx.
-    _sheet_with_widths(widths).save(workdir / "test.xlsx")
-    analyze("test.xlsx")
+    _sheet_with_widths(widths).save(workdir / "sheet.xlsx")
+    analyze("sheet.xlsx")
     assert f"Best layout : {layout_name}" in capsys.readouterr().out
     pdf = read_pdf(workdir / "output.pdf")
     assert pdf["sizes"][0] == pytest.approx(page_size)

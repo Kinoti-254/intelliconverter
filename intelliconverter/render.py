@@ -1,11 +1,16 @@
-"""Building the PDF with ReportLab (moved unchanged from excel_to_pdf.py)."""
-import openpyxl
-from openpyxl.utils import get_column_letter
+"""Building the PDF with ReportLab (moved from excel_to_pdf.py in Phase 0).
+
+Since Phase 1 the PDF is drawn from a SheetModel: hidden rows and columns
+are left out, and formula cells show the value Excel last saved.
+"""
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, A3, LETTER, landscape, portrait
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
+
+from intelliconverter.errors import OutputError
+from intelliconverter.reader import load_sheet
 
 
 # Map layout names to reportlab page sizes
@@ -32,7 +37,7 @@ def extract_sheet_data(ws):
     return data
 
 
-def build_pdf(filepath, output_path, layout_name, scale_percent):
+def build_pdf(filepath, output_path, layout_name, scale_percent, sheet=None):
     """
     Generate a PDF from an Excel file using the specified layout.
 
@@ -41,10 +46,13 @@ def build_pdf(filepath, output_path, layout_name, scale_percent):
         output_path: Where to save the PDF
         layout_name: e.g. "A4 Landscape"
         scale_percent: How much to scale the table (e.g. 86.0)
+        sheet: Sheet name; the active sheet when omitted
     """
-    wb = openpyxl.load_workbook(filepath)
-    ws = wb.active
+    render_pdf(load_sheet(filepath, sheet), output_path, layout_name, scale_percent)
 
+
+def render_pdf(sheet, output_path, layout_name, scale_percent):
+    """Generate a PDF from a SheetModel. Arguments as for build_pdf()."""
     page_size = get_page_size(layout_name)
     page_width, page_height = page_size
 
@@ -58,8 +66,11 @@ def build_pdf(filepath, output_path, layout_name, scale_percent):
         bottomMargin=0.5 * inch,
     )
 
-    # Extract data from sheet
-    data = extract_sheet_data(ws)
+    # Visible cells as text; None becomes an empty string so the table renders cleanly
+    data = [
+        [str(cell) if cell is not None else "" for cell in row]
+        for row in sheet.visible_rows()
+    ]
 
     if not data:
         print("⚠️  No data found in sheet.")
@@ -98,18 +109,27 @@ def build_pdf(filepath, output_path, layout_name, scale_percent):
 
     # Add a title above the table
     styles = getSampleStyleSheet()
-    title = Paragraph(f"<b>{ws.title}</b>", styles["Title"])
+    rows = sheet.visible_row_count
+    columns = len(sheet.visible_columns)
+    title = Paragraph(f"<b>{sheet.title}</b>", styles["Title"])
     subtitle = Paragraph(
         f"Layout: {layout_name}  |  Scale: {scale_percent:.0f}%  |  "
-        f"Rows: {ws.max_row}  |  Columns: {ws.max_column}",
+        f"Rows: {rows}  |  Columns: {columns}",
         styles["Normal"]
     )
 
     elements = [title, Spacer(1, 0.2 * inch), subtitle, Spacer(1, 0.2 * inch), table]
 
-    doc.build(elements)
+    try:
+        doc.build(elements)
+    except OSError as error:
+        reason = f" ({error.strerror})" if error.strerror else ""
+        raise OutputError(
+            f"Could not write {output_path}. If it is open in another program, "
+            f"close it and try again.{reason}"
+        ) from error
     print(f"\n✅ PDF saved to: {output_path}")
     print(f"   Layout  : {layout_name}")
     print(f"   Scale   : {scale_percent:.0f}%")
-    print(f"   Rows    : {ws.max_row}")
-    print(f"   Columns : {ws.max_column}\n")
+    print(f"   Rows    : {rows}")
+    print(f"   Columns : {columns}\n")
