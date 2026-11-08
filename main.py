@@ -93,5 +93,9 @@ def analyze(filepath):
     print(f"  🏆 Score       : {best_score:.0f}/100")
     print(f"\n{'='*48}\n")
 
+# Generate the PDF using the best layout
+    from excel_to_pdf import build_pdf
+    build_pdf("test.xlsx", "output.pdf", best_name, best_scale)
+    
 if __name__ == "__main__":
     analyze("test.xlsx")
