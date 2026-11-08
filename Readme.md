@@ -3,30 +3,37 @@ An intelligent Excel-to-PDF converter that analyzes your spreadsheet
 before converting it, automatically choosing the best page layout so
 tables remain readable and nothing gets awkwardly clipped.
 
-> **Status: early development.** The tool analyses a sheet, recommends a
-> page layout and exports a basic PDF. The layout logic is simple and has
-> known issues; see [Development status](#development-status).
+> **Status: in development.** The layout engine and PDF export work for one
+> sheet at a time from the command line. A visual preview, multiple sheets
+> and a web API are planned; see [Development status](#development-status).
 
 ---
 
 ## The problem it solves
 
 Most converters blindly convert files and produce PDFs where tables are:
-split across pages, text is too small to read, or content is clipped at the edges. IntelliConverter aims to analyze the spreadsheet dimensions first, then select the best orientation, paper size, and scale before generating the PDF.
+split across pages, text is too small to read, or content is clipped at the edges. IntelliConverter analyzes the spreadsheet's content first, then selects the paper, orientation, font size and column widths that make the most readable document.
 
 ---
 
-## How it works (current version)
+## How it works
 
-1. Checks the file and reads one sheet: the cells that hold values (formatting on empty cells is ignored), each column's width, and which rows and columns are hidden
-2. Measures the total width of the visible columns and converts Excel units to inches
-3. Compares the table width against five page layouts (A4 Portrait, A4 Landscape, A3 Portrait, Legal Landscape, A3 Landscape)
-4. Scores each layout by how much of the page width the table fills, and prints a report
-5. Exports `output.pdf` using the highest-scoring layout: a title, a summary line and the visible cells as a table with a repeating header row
+1. **Reads one sheet:** only cells that hold values (formatting on empty cells is ignored), which rows and columns are hidden, and each cell's number format.
+2. **Shows values as Excel does:** thousands separators, decimals, percentages, currency symbols and dates (for example `1,234.50`, `25%`, `08/11/2026`).
+3. **Measures every visible cell** in the PDF's font (Helvetica).
+4. **Simulates the printed table** for every combination of paper (A4, Letter, Legal, A3), orientation (portrait and landscape) and font size (7 to 11 pt):
+    - columns are sized from their content and headers; long text wraps;
+    - a table too wide for the page is split into parts (column bands), each repeating the first column;
+    - rows are paginated without splitting a row across pages, with the header repeated on every page.
+5. **Chooses the cheapest option** using a cost made of named parts: small font, extra paper, column parts, wrapping, empty space and paper type. Neither orientation is preferred in advance: portrait or landscape wins only through these costs. A4 is the standard paper: Legal and A3 cost more than an extra column part, so they are chosen only when nothing else fits, or when you ask for them.
+6. **Draws the PDF exactly as planned:** same widths, line breaks, row heights and page breaks, a title on the first page and page numbers on every page.
 
-Hidden rows and columns are left out, as Excel does when printing. Formula cells show the value Excel last saved; formulas in files that were never opened and saved in Excel have no saved value, show blank, and the report warns about them.
+Hidden rows and columns are left out, as Excel does when printing. Formula
+cells show the value Excel last saved; formulas in files that were never
+opened and saved in Excel show blank, and the report warns about them.
 
-Only column widths are used for the layout decision. Row count, page height, font size and cell content are not used yet. In the PDF, every column gets the same width.
+For sheets over 500 rows, the options are compared using an even sample of
+rows; the chosen layout is then worked out exactly for every row.
 
 ---
 
@@ -57,37 +64,54 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python main.py [file] [--sheet NAME] [--plan]
+python main.py [file] [--sheet NAME] [--paper PAPER] [--explain]
 ```
 
 | Command | What it does |
 |---------|--------------|
-| `python main.py` | Analyses `test.xlsx` in the current folder |
-| `python main.py sales.xlsx` | Analyses the active sheet of `sales.xlsx` |
-| `python main.py sales.xlsx --sheet "Q3 Summary"` | Analyses a named sheet |
-| `python main.py sales.xlsx --plan` | Previews the new layout engine's plan (see below); writes no PDF |
+| `python main.py` | Converts `test.xlsx` in the current folder |
+| `python main.py sales.xlsx` | Converts the active sheet of `sales.xlsx` |
+| `python main.py sales.xlsx --sheet "Q3 Summary"` | Converts a named sheet |
+| `python main.py sales.xlsx --paper A3` | Uses A3 paper (also `A4`, `Letter`, `Legal`; default `auto`). Both orientations are still compared. |
+| `python main.py sales.xlsx --explain` | Also shows the best alternatives and the cost of the chosen layout |
 | `python main.py --help` | Shows the options |
 
 The report is printed and `output.pdf` is written to the current folder,
 replacing any existing `output.pdf`.
 
-### New layout engine (preview)
+Output for the included `test.xlsx`:
 
-`--plan` shows what the new layout engine would choose. It is a preview: the
-PDF still uses the current layout until the engine becomes the default.
+```
+================================================
+  IntelliConverter — Layout Report
+================================================
+  Sheet   : Sheet1
+  Columns : 4
+  Rows    : 3
+================================================
+  Paper   : A4 Portrait
+  Font    : 10 pt
+  Parts   : 1
+  Pages   : 1
+  Part 1  : A 0.54, B 0.44, C 0.78, D 0.91 (inches)
+================================================
 
-The engine measures every visible cell in the PDF's font and simulates the
-printed table for each combination of paper (A4, Letter, Legal, A3),
-orientation and font size (7 to 11 pt). Columns are sized from their content;
-long text wraps; tables too wide for the page are split into column bands,
-with the first column repeated in each. Each option gets a cost made of named
-parts (small font, extra paper, bands, wrapping, empty space, paper type), and
-the cheapest wins. The preview prints the plan, the best alternatives and the
-cost breakdown, so you can see why a layout was chosen.
+✅ PDF saved to: output.pdf
+```
 
-For sheets over 500 rows, alternatives are compared using an even sample of
-rows (their page counts are marked as estimates); the chosen plan is then
-worked out exactly for every row.
+With `--explain`, the report also lists the best alternatives and the cost
+breakdown, for example:
+
+```
+  Best candidates (lower cost is better):
+  Candidate           Font  Parts   Pages    Cost
+  A4 Portrait           10      1       1    1.26  <- chosen
+  A4 Landscape          10      1       1    1.50
+  ...
+  Cost of the chosen layout:
+    empty_width        1.26
+    total              1.26
+```
 
 ### Errors and limits
 
@@ -95,7 +119,8 @@ Problems you can fix are reported in one line, for example
 `Error: File not found: sales.xlsx` (exit code 1), never as a Python traceback.
 This covers missing files, unsupported or damaged files, password-protected
 files, unknown sheet names, chart sheets, empty sheets, sheets where
-everything is hidden, and an `output.pdf` that is open in another program.
+everything is hidden, a cell too long to fit on any page, and an `output.pdf`
+that is open in another program.
 
 | Limit | Value |
 |-------|-------|
@@ -104,47 +129,10 @@ everything is hidden, and an `output.pdf` that is open in another program.
 | Columns (in the used range) | 100 |
 | Cells (rows × columns of the used range) | 1,000,000 |
 
-Large files are slow: on a test machine a 50,000 × 20 sheet (one million
-cells) took about 20 seconds to read and about 2 minutes in total, mostly
-spent drawing the 1,389-page PDF. A sheet over a limit is rejected as soon as
-the limit is reached while reading, rather than after reading all of it.
-
-Output for the included `test.xlsx`:
-
-```
-================================================
-  IntelliConverter — Layout Analysis Report
-================================================
-  Sheet   : Sheet1
-  Columns : 4
-  Rows    : 3
-  Width   : 4.84 inches
-================================================
-  Layout               Fits    Scale   Score
-  ------------------------------------------
-  A4 Portrait          ✅         63%      38
-  A4 Landscape         ✅         45%      27
-  A3 Portrait          ✅         41%      25
-  Legal Landscape      ✅         37%      22
-  A3 Landscape         ✅         29%      18
-  ------------------------------------------
-
-  ✨ Best layout : A4 Portrait
-  📐 Scale       : 63%
-  🏆 Score       : 38/100
-
-================================================
-
-
-✅ PDF saved to: output.pdf
-   Layout  : A4 Portrait
-   Scale   : 63%
-   Rows    : 3
-   Columns : 4
-```
-
-"Scale" is the share of the page width the table fills. The PDF uses it to
-shrink the table's width; the font size stays the same.
+A sheet over a limit is rejected as soon as the limit is reached while
+reading. On a test machine a 50,000 × 20 sheet (one million cells) took about
+70 seconds in total (reading 21 s, planning 18 s, drawing the 4,168-page PDF
+30 s) and about 1 GB of memory.
 
 ---
 
@@ -155,11 +143,16 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The suite has three kinds of tests:
+The suite covers:
 
-- **Behaviour tests** pin what the reader, the command line, the console report and the PDF (page size, page count, table contents, column widths) do, so changes to the code can be checked against them. The report for `test.xlsx` is compared byte for byte with the original program's output.
-- **Regression tests** (named `test_defect_...` outside `test_known_defects.py`) keep fixed defects fixed.
-- **Known-defect tests** (`tests/test_known_defects.py`) describe the correct behaviour for each open issue below. They are marked as expected failures (`xfail`) and show as `x` in the output. When a defect is fixed, its test starts passing and pytest flags it, so it can move to the regression tests.
+- **Behaviour tests** for the reader, number formats, text measurement, the layout engine, the command line and the report. The report for `test.xlsx` is compared byte for byte with an approved copy.
+- **PDF tests** that read each generated PDF back and check every promise the plan makes: page count and size, column widths, row heights, wrapped lines, page breaks, the repeated header, page numbers, and that every visible cell appears once.
+- **Reference sheets** (`tests/test_planner_reference.py`) with the layout a person would expect, written before the engine's costs were tuned.
+- **Regression tests** (named `test_defect_...`) for every defect found in the original technical assessment.
+
+Known defects can be recorded as tests marked `xfail` (expected to fail);
+`pytest.ini` makes them strict, so a fixed defect is flagged until its test
+becomes a regression test. There are none open at present.
 
 Tests run in temporary folders, so they never change `test.xlsx` or `output.pdf` in the project folder.
 
@@ -173,26 +166,25 @@ intelliconverter/
 │   ├── cli.py                 # Command-line options and error messages
 │   ├── errors.py              # Errors reported to the user without a traceback
 │   ├── reader.py              # Checks the file and reads a sheet into a SheetModel
-│   ├── measure.py             # Column widths to inches
-│   ├── layout.py              # Current page layouts and the layout score
+│   ├── numberformat.py        # Shows values the way Excel does
 │   ├── textmetrics.py         # Measures and wraps text in the PDF font
-│   ├── planner.py             # New layout engine (preview with --plan)
-│   ├── report.py              # Prints the analysis report, then exports the PDF
-│   └── render.py              # Builds the PDF with ReportLab
+│   ├── planner.py             # The layout engine
+│   ├── report.py              # Prints the report, then exports the PDF
+│   ├── render.py              # Draws the PDF exactly as planned
+│   └── measure.py             # Excel column widths to inches (for a future mode)
 ├── tests/
-│   ├── golden/                # Recorded console output used by the tests
+│   ├── golden/                # Approved report output for test.xlsx
 │   ├── test_cli.py
 │   ├── test_reader.py
-│   ├── test_measure.py
-│   ├── test_layout.py
+│   ├── test_numberformat.py
 │   ├── test_textmetrics.py
 │   ├── test_planner.py
 │   ├── test_planner_reference.py   # Reference sheets with expected layouts
+│   ├── test_measure.py
 │   ├── test_report.py
-│   ├── test_render.py
-│   └── test_known_defects.py
-├── main.py                    # Entry point (python main.py [file] [--sheet NAME] [--plan])
-├── excel_to_pdf.py            # Kept for existing imports; points to render.py
+│   └── test_render.py
+├── main.py                    # Entry point
+├── excel_to_pdf.py            # Kept for code written before the layout engine
 ├── test.xlsx                  # Sample spreadsheet
 ├── requirements.txt           # Runtime dependencies
 ├── requirements-dev.txt       # Test dependencies
@@ -208,34 +200,28 @@ intelliconverter/
 |------------|--------|
 | Read a sheet (used range, hidden rows and columns, saved formula values) | Done |
 | Input validation and size limits | Done |
-| Choose the file and sheet | Done (command line) |
-| Convert units to inches | Done |
-| Generate layout candidates | Basic: five fixed page widths (new engine in preview: 72 candidates) |
-| Score and select best layout | Basic: width fit only (new engine in preview: content, pages, bands) |
-| Export PDF with chosen layout | Basic: equal column widths, fixed font |
-| Conversion report (why this layout was chosen) | Not started |
+| Number and date formats (basic) | Done |
+| Content-based column widths, wrapping and font sizing | Done |
+| Paper and orientation selection (A4, Letter, Legal, A3) | Done |
+| Pagination with repeated headers; no row split across pages | Done |
+| Wide tables split into parts that repeat the first column | Done |
+| PDF that follows the plan exactly | Done |
+| Explanation of the chosen layout (`--explain`) | Done |
+| Preserve Excel's column widths (optional mode) | Planned |
+| Visual preview and user adjustments | Planned |
+| Multiple sheets and large workbooks | Planned |
 | FastAPI web interface | Planned |
 
-### Known issues
+### Limitations
 
-Each open issue has a matching test in `tests/test_known_defects.py`.
-The numbers follow the original technical assessment.
+- One sheet per run; the first visible row is always treated as the header.
+- The first column is assumed to identify rows when a table is split into parts.
+- Fonts, colours, borders, merged cells, images and charts from the sheet are not reproduced; the PDF uses its own clean table style.
+- Number formats cover the common cases; fractions and some special formats fall back to Excel's General format.
+- Large sheets are slow and memory-heavy (see the limits above).
 
-- **1** - Tables wider than every page get no recommendation ("Best layout: None").
-- **4** - Cell content is ignored, so long text in a narrow column is not accounted for.
-- **5** - Row count and page height do not affect the result.
-
-Issues 1, 4 and 5 are solved in the new layout engine (`--plan`) and will
-close when it becomes the default.
-- **6c** - A table too wide for every page produces a PDF labelled "Layout: None" with zero-width columns.
-- **6d** - Measured column widths are ignored in the PDF; every column gets the same width.
-- **6e** - Numbers are printed as Python floats, for example `23.0` instead of `23`.
-
-Fixed (each now has a regression test): 2 hidden columns counted in the width,
-3 grouped column ranges measured as one column, 6a PDF always built from
-`test.xlsx`, 7 formatting on empty cells adding width, 8 formulas read as text,
-9 raw errors for bad files and crashes on non-UTF-8 consoles, 6b Legal
-Landscape rendered on Letter paper.
+All defects from the original technical assessment are fixed; each has a
+regression test.
 
 ---
 
@@ -244,7 +230,7 @@ Landscape rendered on Letter paper.
 | Purpose            | Tool          |
 |--------------------|---------------|
 | Read Excel         | openpyxl      |
-| Layout calculation | Pure Python   |
+| Layout engine      | Pure Python   |
 | Generate PDF       | reportlab     |
 | Tests              | pytest, pypdf |
 | Web API (planned)  | FastAPI       |
