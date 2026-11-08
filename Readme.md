@@ -83,10 +83,12 @@ everything is hidden, and an `output.pdf` that is open in another program.
 | File size | 20 MB |
 | Rows (in the used range) | 50,000 |
 | Columns (in the used range) | 100 |
+| Cells (rows × columns of the used range) | 1,000,000 |
 
-Large files are slow: on a test machine a 50,000 × 20 sheet took about
-20 seconds to read and about 2 minutes in total, mostly spent drawing the
-1,389-page PDF.
+Large files are slow: on a test machine a 50,000 × 20 sheet (one million
+cells) took about 20 seconds to read and about 2 minutes in total, mostly
+spent drawing the 1,389-page PDF. A sheet over a limit is rejected as soon as
+the limit is reached while reading, rather than after reading all of it.
 
 Output for the included `test.xlsx`:
 

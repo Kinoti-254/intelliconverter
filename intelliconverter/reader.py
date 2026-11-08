@@ -19,6 +19,9 @@ __all__ = ["ColumnInfo", "InputError", "SheetModel", "load_active_sheet", "load_
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_ROWS = 50_000
 MAX_COLUMNS = 100
+# Reading takes roughly 20 s and 500 MB per million cells, so the total is
+# capped as well as each side.
+MAX_CELLS = 1_000_000
 
 DEFAULT_COLUMN_WIDTH = 8.43  # Excel's default, in characters
 EXCEL_EXTENSIONS = {".xlsx", ".xlsm", ".xltx", ".xltm"}
@@ -90,8 +93,8 @@ def load_sheet(filepath, sheet=None):
     shown = str(filepath)
     _check_file(path, shown)
 
+    # The scan also enforces the size limits, before the slow full load.
     sheet_name, last_row, last_col, formula_cells = _scan_used_range(path, shown, sheet)
-    _check_limits(last_row, last_col)
 
     wb = _open_workbook(path, shown, data_only=True)
     try:
@@ -192,6 +195,8 @@ def _scan_used_range(path, shown, sheet):
     """Find the last row and column holding a value, and where formulas are.
 
     Uses openpyxl's fast read-only mode. Formatting on empty cells is ignored.
+    The used range only grows as the scan goes on, so it stops as soon as a
+    size limit is passed instead of reading the rest of a huge sheet.
     """
     wb = _open_workbook(path, shown, read_only=True)
     try:
@@ -206,8 +211,10 @@ def _scan_used_range(path, shown, sheet):
             for col_number, value in enumerate(row, start=1):
                 if value is None or value == "":
                     continue
-                last_row = row_number
-                last_col = max(last_col, col_number)
+                if row_number > last_row or col_number > last_col:
+                    last_row = row_number
+                    last_col = max(last_col, col_number)
+                    _check_limits(last_row, last_col)
                 if isinstance(value, str) and value.startswith("="):
                     formula_cells.append((row_number, col_number))
 
@@ -219,10 +226,17 @@ def _scan_used_range(path, shown, sheet):
 
 
 def _check_limits(rows, columns):
+    """Called during the scan with the used range so far, hence 'at least'."""
     if rows > MAX_ROWS:
-        raise InputError(f"The sheet has {rows:,} rows; the limit is {MAX_ROWS:,}.")
+        raise InputError(f"The sheet has at least {rows:,} rows; the limit is {MAX_ROWS:,}.")
     if columns > MAX_COLUMNS:
-        raise InputError(f"The sheet has {columns:,} columns; the limit is {MAX_COLUMNS:,}.")
+        raise InputError(f"The sheet has at least {columns:,} columns; the limit is {MAX_COLUMNS:,}.")
+    cells = rows * columns
+    if cells > MAX_CELLS:
+        raise InputError(
+            f"The sheet has at least {cells:,} cells ({rows:,} rows x {columns:,} columns); "
+            f"the limit is {MAX_CELLS:,}."
+        )
 
 
 def _read_columns(ws, last_col):

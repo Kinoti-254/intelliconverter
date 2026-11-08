@@ -309,9 +309,47 @@ class TestLimits:
             load_sheet(SAMPLE_XLSX)
         assert "4 columns; the limit is 3" in _message(excinfo)
 
+    def test_cells(self, monkeypatch):
+        # test.xlsx is 3 rows x 4 columns = 12 cells.
+        monkeypatch.setattr(reader, "MAX_CELLS", 11)
+        with pytest.raises(InputError) as excinfo:
+            load_sheet(SAMPLE_XLSX)
+        assert "12 cells (3 rows x 4 columns); the limit is 11" in _message(excinfo)
+
+    def test_exactly_at_the_cell_limit_is_allowed(self, monkeypatch):
+        monkeypatch.setattr(reader, "MAX_CELLS", 12)
+        assert load_sheet(SAMPLE_XLSX).row_count == 3
+
+    def test_cell_limit_is_checked_before_the_full_load(self, monkeypatch):
+        # The point of the limit is to avoid the slow, memory-heavy load.
+        monkeypatch.setattr(reader, "MAX_CELLS", 11)
+        modes = []
+        real_open = reader._open_workbook
+
+        def recording_open(path, shown, **options):
+            modes.append(options)
+            return real_open(path, shown, **options)
+
+        monkeypatch.setattr(reader, "_open_workbook", recording_open)
+        with pytest.raises(InputError):
+            load_sheet(SAMPLE_XLSX)
+        assert modes == [{"read_only": True}]
+
+    def test_scan_stops_as_soon_as_a_limit_is_passed(self, monkeypatch, save_workbook):
+        # 10 rows with a limit of 2: rejected on reaching row 3, without
+        # reading the rest of the sheet.
+        wb = openpyxl.Workbook()
+        for row in range(10):
+            wb.active.append([row])
+        monkeypatch.setattr(reader, "MAX_ROWS", 2)
+        with pytest.raises(InputError) as excinfo:
+            load_sheet(save_workbook(wb))
+        assert "at least 3 rows; the limit is 2" in _message(excinfo)
+
     def test_default_limits(self):
         assert reader.MAX_ROWS == 50_000
         assert reader.MAX_COLUMNS == 100
+        assert reader.MAX_CELLS == 1_000_000
         assert reader.MAX_FILE_BYTES == 20 * 1024 * 1024
 
 
