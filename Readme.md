@@ -3,9 +3,9 @@ An intelligent Excel-to-PDF converter that analyzes your spreadsheet
 before converting it, automatically choosing the best page layout so
 tables remain readable and nothing gets awkwardly clipped.
 
-> **Status: in development.** The layout engine and PDF export work for one
-> sheet at a time from the command line. A visual preview, multiple sheets
-> and a web API are planned; see [Development status](#development-status).
+> **Status: in development.** The layout engine and PDF export work from the
+> command line, for one sheet or a whole workbook. A visual preview and a web
+> API are planned; see [Development status](#development-status).
 
 ---
 
@@ -18,7 +18,7 @@ split across pages, text is too small to read, or content is clipped at the edge
 
 ## How it works
 
-1. **Reads one sheet:** only cells that hold values (formatting on empty cells is ignored), which rows and columns are hidden, and each cell's number format.
+1. **Reads the sheets to convert** (by default every visible worksheet): only cells that hold values (formatting on empty cells is ignored), which rows and columns are hidden, and each cell's number format. Hidden sheets, chart sheets and empty sheets are skipped and listed in the report.
 2. **Shows values as Excel does:** thousands separators, decimals, percentages, currency symbols and dates (for example `1,234.50`, `25%`, `08/11/2026`).
 3. **Measures every visible cell** in the PDF's font (Helvetica).
 4. **Simulates the printed table** for every combination of paper (A4, Letter, Legal, A3), orientation (portrait and landscape) and font size (7 to 11 pt):
@@ -27,6 +27,12 @@ split across pages, text is too small to read, or content is clipped at the edge
     - rows are paginated without splitting a row across pages, with the header repeated on every page.
 5. **Chooses the cheapest option** using a cost made of named parts: small font, extra paper, column parts, wrapping, empty space and paper type. Neither orientation is preferred in advance: portrait or landscape wins only through these costs. A4 is the standard paper: Legal and A3 cost more than an extra column part, so they are chosen only when nothing else fits, or when you ask for them.
 6. **Draws the PDF exactly as planned:** same widths, line breaks, row heights and page breaks, a title on the first page and page numbers on every page.
+
+**Each sheet is planned independently**, so one PDF can mix paper sizes and
+orientations: a wide sheet on landscape pages, followed by a narrow one on
+portrait pages. Each sheet starts on a new page with its own title and a PDF
+bookmark, and the footer shows both the sheet's page number and the
+document's.
 
 Hidden rows and columns are left out, as Excel does when printing. Formula
 cells show the value Excel last saved; formulas in files that were never
@@ -64,20 +70,22 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python main.py [file] [--sheet NAME] [--paper PAPER] [--explain]
+python main.py [file] [--sheet NAME ...] [--paper PAPER] [--explain] [-o PDF]
 ```
 
 | Command | What it does |
 |---------|--------------|
-| `python main.py` | Converts `test.xlsx` in the current folder |
-| `python main.py sales.xlsx` | Converts the active sheet of `sales.xlsx` |
-| `python main.py sales.xlsx --sheet "Q3 Summary"` | Converts a named sheet |
-| `python main.py sales.xlsx --paper A3` | Uses A3 paper (also `A4`, `Letter`, `Legal`; default `auto`). Both orientations are still compared. |
-| `python main.py sales.xlsx --explain` | Also shows the best alternatives and the cost of the chosen layout |
+| `python main.py` | Converts every visible sheet of `test.xlsx` in the current folder |
+| `python main.py sales.xlsx` | Converts every visible sheet of `sales.xlsx` into one PDF |
+| `python main.py sales.xlsx --sheet "Q3 Summary"` | Converts one named sheet |
+| `python main.py sales.xlsx --sheet Costs --sheet Sales` | Converts named sheets, in that order |
+| `python main.py sales.xlsx -o sales.pdf` | Writes `sales.pdf` instead of `output.pdf` |
+| `python main.py sales.xlsx --paper A3` | Uses A3 paper for every sheet (also `A4`, `Letter`, `Legal`; default `auto`). Both orientations are still compared. |
+| `python main.py sales.xlsx --explain` | Also shows each sheet's best alternatives and the cost of its layout |
 | `python main.py --help` | Shows the options |
 
-The report is printed and `output.pdf` is written to the current folder,
-replacing any existing `output.pdf`.
+The report is printed and the PDF (`output.pdf` unless `-o` says otherwise)
+is written, replacing any existing file of that name.
 
 Output for the included `test.xlsx`:
 
@@ -99,6 +107,26 @@ Output for the included `test.xlsx`:
 ✅ PDF saved to: output.pdf
 ```
 
+With several sheets, the report shows one block per sheet and a total, for
+example:
+
+```
+  Sheets  : 2 (Quarterly Figures, Stock List)
+  Skipped : Scratch (empty)
+================================================
+  Sheet   : Quarterly Figures
+  ...
+  Paper   : A4 Landscape
+  Pages   : 2
+  ----------------------------------------------
+  Sheet   : Stock List
+  ...
+  Paper   : A4 Portrait
+  Pages   : 4
+================================================
+  Total   : 2 sheets, 6 pages
+```
+
 With `--explain`, the report also lists the best alternatives and the cost
 breakdown, for example:
 
@@ -118,16 +146,17 @@ breakdown, for example:
 Problems you can fix are reported in one line, for example
 `Error: File not found: sales.xlsx` (exit code 1), never as a Python traceback.
 This covers missing files, unsupported or damaged files, password-protected
-files, unknown sheet names, chart sheets, empty sheets, sheets where
-everything is hidden, a cell too long to fit on any page, and an `output.pdf`
-that is open in another program.
+files, unknown sheet names, a named sheet that is a chart sheet, empty or
+entirely hidden, a workbook with nothing to convert, a cell too long to fit
+on any page (the message names the sheet), and a PDF that is open in another
+program. When any sheet fails, no PDF is written.
 
 | Limit | Value |
 |-------|-------|
 | File size | 20 MB |
 | Rows (in the used range) | 50,000 |
 | Columns (in the used range) | 100 |
-| Cells (rows × columns of the used range) | 1,000,000 |
+| Cells (rows × columns of the used range, all selected sheets together) | 1,000,000 |
 
 A sheet over a limit is rejected as soon as the limit is reached while
 reading. On a test machine a 50,000 × 20 sheet (one million cells) took about
@@ -146,7 +175,7 @@ pytest
 The suite covers:
 
 - **Behaviour tests** for the reader, number formats, text measurement, the layout engine, the command line and the report. The report for `test.xlsx` is compared byte for byte with an approved copy.
-- **PDF tests** that read each generated PDF back and check every promise the plan makes: page count and size, column widths, row heights, wrapped lines, page breaks, the repeated header, page numbers, and that every visible cell appears once.
+- **PDF tests** that read each generated PDF back and check every promise the plan makes: page count and size, column widths, row heights, wrapped lines, page breaks, the repeated header, page numbers, and that every visible cell appears once. Multi-sheet PDFs are checked page by page against each sheet's own plan, including bookmarks.
 - **Reference sheets** (`tests/test_planner_reference.py`) with the layout a person would expect, written before the engine's costs were tuned.
 - **Regression tests** (named `test_defect_...`) for every defect found in the original technical assessment.
 
@@ -207,14 +236,15 @@ intelliconverter/
 | Wide tables split into parts that repeat the first column | Done |
 | PDF that follows the plan exactly | Done |
 | Explanation of the chosen layout (`--explain`) | Done |
+| Several sheets in one PDF, each with its own layout | Done |
 | Preserve Excel's column widths (optional mode) | Planned |
 | Visual preview and user adjustments | Planned |
-| Multiple sheets and large workbooks | Planned |
 | FastAPI web interface | Planned |
 
 ### Limitations
 
-- One sheet per run; the first visible row is always treated as the header.
+- The first visible row of each sheet is always treated as its header.
+- `--paper` applies to every sheet; there is no per-sheet paper choice yet.
 - The first column is assumed to identify rows when a table is split into parts.
 - Fonts, colours, borders, merged cells, images and charts from the sheet are not reproduced; the PDF uses its own clean table style.
 - Number formats cover the common cases; fractions and some special formats fall back to Excel's General format.
