@@ -11,3 +11,7 @@ class InputError(ConversionError):
 
 class OutputError(ConversionError):
     """The output file can't be written."""
+
+
+class LayoutError(ConversionError):
+    """No page layout can fit the sheet (for example, one cell holds too much text)."""
