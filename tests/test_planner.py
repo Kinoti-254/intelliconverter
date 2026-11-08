@@ -71,6 +71,15 @@ class TestSplitIntoBands:
         assert sorted(c for band in bands for c in band.columns[1:]) == list(range(1, 7))
         assert all(sum(band.widths) <= 200 + 1e-6 for band in bands)
 
+    def test_columns_are_balanced_across_the_fewest_bands(self):
+        # Filling band 1 to the brim would give 4 + 2 columns; balanced is 3 + 3.
+        bands = split_into_bands([50] * 7, [40] * 7, usable=220)
+        assert [band.columns for band in bands] == [(0, 1, 2, 3), (0, 4, 5, 6)]
+
+    def test_balancing_never_adds_a_band(self):
+        bands = split_into_bands([60] * 7, [50] * 7, usable=200)
+        assert len(bands) == 2
+
     def test_returns_none_when_one_column_plus_the_label_cannot_fit(self):
         assert split_into_bands([60, 300], [60, 250], usable=200) is None
 
@@ -138,3 +147,57 @@ def test_only_visible_columns_are_planned(save_workbook):
 def test_a_header_only_sheet_can_be_planned(save_workbook):
     plan = plan_layout(_model(save_workbook, [["Only", "Header"]])).plan
     assert plan.pages == 1
+
+
+class TestPhase2bRules:
+    def test_no_cost_part_depends_on_orientation(self):
+        assert "landscape" not in planner.WEIGHTS
+        assert "orientation" not in " ".join(planner.WEIGHTS)
+
+    def test_a4_and_letter_are_practical_papers_legal_and_a3_are_last_resorts(self):
+        cost = planner.PAPER_COST
+        assert cost["A4"] == 0 and cost["Letter"] <= 1
+        # More than an extra column band, so A4 with bands beats A3 or Legal.
+        assert min(cost["Legal"], cost["A3"]) * planner.WEIGHTS["paper"] > planner.WEIGHTS["column_bands"]
+
+    def test_a_page_smaller_than_a4_still_counts_as_one_sheet(self):
+        a4 = planner.Candidate(candidate_pages()[0], 10, True, "", (), 3, {}, 0)
+        letter = planner.Candidate(candidate_pages()[2], 10, True, "", (), 3, {}, 0)
+        a3 = planner.Candidate(candidate_pages()[6], 10, True, "", (), 3, {}, 0)
+        assert planner._a4_sheets(a4) == planner._a4_sheets(letter) == 3
+        assert planner._a4_sheets(a3) == pytest.approx(6)
+
+    def test_ties_go_to_fewer_pages_then_less_wrapping_then_less_empty_space(self):
+        def candidate(pages, wrapping, empty):
+            cost = dict.fromkeys(planner.WEIGHTS, 0.0)
+            cost.update(wrapping=wrapping, empty_width=empty)
+            return planner.Candidate(candidate_pages()[0], 10, True, "", (), pages, cost, 1.0)
+
+        assert planner._rank_key(candidate(2, 0, 0), 9) < planner._rank_key(candidate(3, 0, 0), 0)
+        assert planner._rank_key(candidate(2, 0.1, 0), 9) < planner._rank_key(candidate(2, 0.2, 0), 0)
+        assert planner._rank_key(candidate(2, 0, 0.1), 9) < planner._rank_key(candidate(2, 0, 0.2), 0)
+        # Only when every measured factor is equal does candidate order decide.
+        assert planner._rank_key(candidate(2, 0, 0), 0) < planner._rank_key(candidate(2, 0, 0), 1)
+
+
+class TestPaperChoice:
+    def test_a_chosen_paper_limits_the_candidates(self):
+        result = plan_layout(load_sheet(SAMPLE_XLSX), paper="A3")
+        assert result.plan.page.paper == "A3"
+        assert {c.page.paper for c in result.candidates} == {"A3"}
+
+    def test_both_orientations_are_still_compared(self):
+        result = plan_layout(load_sheet(SAMPLE_XLSX), paper="Letter")
+        assert {c.page.orientation for c in result.candidates} == {"Portrait", "Landscape"}
+
+    def test_unknown_paper_is_rejected(self):
+        with pytest.raises(ValueError):
+            plan_layout(load_sheet(SAMPLE_XLSX), paper="B5")
+
+
+def test_defect_4_long_text_gets_a_wider_column_than_short_text(save_workbook):
+    # Regression test: before Phase 2b cell content was ignored when sizing columns.
+    model = _model(save_workbook, [["Code", "Description"],
+                                   ["A1", "Nairobi Regional Sales Office, second floor"]])
+    widths = plan_layout(model).plan.bands[0].widths
+    assert widths[1] > 2 * widths[0]

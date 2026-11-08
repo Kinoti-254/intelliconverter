@@ -78,6 +78,20 @@ def financial_12_columns(tmp_path):
     return _save(tmp_path, "financial", rows)
 
 
+def narrow_tall_list(tmp_path):
+    # Added in Phase 2b, written before running: should favour portrait on its own.
+    rows = [["Code", "Description"]] + [[f"C{i:05d}", f"Stock line {i}"] for i in range(2000)]
+    return _save(tmp_path, "narrow", rows)
+
+
+def wide_20_columns(tmp_path):
+    # Added in Phase 2b, written before running: chose A3 in Phase 2a; A4 with
+    # column bands must win now.
+    rows = [[f"Header {c}" for c in range(20)]]
+    rows += [[r * 20 + c if c % 2 else f"text {r}-{c}" for c in range(20)] for r in range(400)]
+    return _save(tmp_path, "wide20", rows)
+
+
 def long_unbreakable_words(tmp_path):
     url = "https://example.com/" + "segment/" * 12 + "end"
     rows = [["Name", "Link"]] + [[f"Page {i}", url] for i in range(10)]
@@ -94,6 +108,8 @@ REFERENCES = [
     (single_column_list, {"A4"}, "Portrait", 10.0, "single"),
     (financial_12_columns, {"A4"}, "Landscape", 9.0, "single"),
     (long_unbreakable_words, {"A4"}, None, 9.0, "single"),
+    (narrow_tall_list, {"A4"}, "Portrait", 9.0, "single"),
+    (wide_20_columns, {"A4"}, "Landscape", 9.0, "multiple"),
 ]
 
 

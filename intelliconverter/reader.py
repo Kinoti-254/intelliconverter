@@ -5,7 +5,7 @@ hold values), applies the size limits and returns a SheetModel. Every
 problem a user can cause is raised as InputError with a plain message.
 """
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import openpyxl
@@ -44,6 +44,8 @@ class SheetModel:
 
     `cells` holds every row of the used range, hidden ones included, so
     positions match the sheet. Use visible_rows() for what should be shown.
+    `formats` holds each cell's Excel number format, in the same positions
+    (None means General everywhere).
     """
 
     title: str
@@ -51,6 +53,7 @@ class SheetModel:
     hidden_rows: frozenset[int]
     cells: list[list]
     uncached_formula_count: int
+    formats: list = field(default=None, repr=False)
 
     @property
     def row_count(self):
@@ -70,10 +73,19 @@ class SheetModel:
 
     def visible_rows(self):
         """Cell values with hidden rows and columns removed."""
+        return self._visible(self.cells)
+
+    def visible_formats(self):
+        """Number formats in the same shape as visible_rows()."""
+        if self.formats is None:
+            return [["General"] * len(row) for row in self.visible_rows()]
+        return self._visible(self.formats)
+
+    def _visible(self, grid):
         keep = [column.index - 1 for column in self.visible_columns]
         return [
             [row[i] for i in keep]
-            for row_number, row in enumerate(self.cells, start=1)
+            for row_number, row in enumerate(grid, start=1)
             if row_number not in self.hidden_rows
         ]
 
@@ -104,15 +116,15 @@ def load_sheet(filepath, sheet=None):
             number for number, dim in ws.row_dimensions.items()
             if dim.hidden and number <= last_row
         )
-        cells = [
-            list(row)
-            for row in ws.iter_rows(min_row=1, max_row=last_row, max_col=last_col, values_only=True)
-        ]
+        cells, formats = [], []
+        for row in ws.iter_rows(min_row=1, max_row=last_row, max_col=last_col):
+            cells.append([cell.value for cell in row])
+            formats.append([cell.number_format for cell in row])
     finally:
         wb.close()
 
     uncached = sum(1 for row, col in formula_cells if cells[row - 1][col - 1] is None)
-    model = SheetModel(sheet_name, columns, hidden_rows, cells, uncached)
+    model = SheetModel(sheet_name, columns, hidden_rows, cells, uncached, formats)
     if not model.visible_columns or model.visible_row_count == 0:
         raise InputError(
             f"Sheet '{sheet_name}' has no visible data: all of its rows or columns are hidden."

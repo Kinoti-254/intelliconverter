@@ -6,9 +6,10 @@ How it works:
    columns from their content, split them into bands if they can't fit
    across the page, and simulate wrapping and page breaks.
 3. Reject candidates that break a hard limit; give the rest a cost made of
-   named parts (small font, extra pages, bands, wrapping...). The cheapest
-   wins; ties go to the earlier candidate (A4 first, portrait first,
-   larger font first).
+   named parts (small font, extra paper, bands, wrapping...). The cheapest
+   wins. Neither orientation gets an advantage: portrait or landscape wins
+   only through these costs. Exact ties go to fewer pages, then less
+   wrapping, then less empty width, and only then to candidate order.
 4. Work out the winner exactly (every row, every page break) as a LayoutPlan.
 
 Large sheets: candidates are compared using an evenly spaced sample of up
@@ -56,19 +57,24 @@ WIDTH_PERCENTILE = 0.9      # one unusually long cell doesn't widen a column
 
 SAMPLE_ROWS = 500
 
-PAPER_COST = {"A4": 0.0, "Letter": 1.0, "Legal": 3.0, "A3": 4.0}
+# A4 is the standard paper; Letter is close. Legal and A3 cost more than an
+# extra column band, so A4 with bands wins whenever it can work; they are
+# used when nothing else fits, or when the user asks for them (--paper).
+PAPER_COST = {"A4": 0.0, "Letter": 1.0, "Legal": 20.0, "A3": 20.0}
+
+# Kept free at the bottom of each page so rounding can never push a row over.
+HEIGHT_SAFETY = 0.5
 
 # Cost of each named part. Tuned against tests/test_planner_reference.py.
 WEIGHTS = {
     "small_font": 8.0,       # per point below COMFORT_FONT
     "font_distance": 1.0,    # per point away from PREFERRED_FONT
     "extra_paper": 4.0,      # times (paper used / least paper of any candidate - 1),
-                             # paper measured in A4 sheets so 1 A3 page counts as 2
+                             # in A4 sheets: an A3 page counts as 2, a Letter page as 1
     "column_bands": 10.0,    # per band beyond the first
     "wrapping": 6.0,         # times the share of cells that wrap
     "empty_width": 2.0,      # times the share of the page width left empty
     "paper": 1.0,            # times PAPER_COST (A4 is standard here)
-    "landscape": 0.5,        # portrait is preferred when all else is equal
     "short_last_page": 1.0,  # a last page holding only one or two rows
 }
 
@@ -138,6 +144,7 @@ class PlanResult:
     plan: LayoutPlan
     candidates: tuple     # feasible ones first, cheapest first
     sampled: bool         # True when candidates' page counts are estimates
+    measured: "MeasuredSheet"  # the cell texts the plan was made from
 
 
 @dataclass(frozen=True)
@@ -151,10 +158,15 @@ class MeasuredSheet:
 
 # --- Building blocks ---------------------------------------------------------
 
-def candidate_pages():
+def candidate_pages(paper=None):
+    """Every paper in both orientations, or just `paper` (e.g. "A3") in both."""
+    names = [name for name, _ in PAPERS]
+    if paper is not None and paper not in names:
+        raise ValueError(f"Unknown paper '{paper}'. Choose from: {', '.join(names)}.")
     return [
-        Page(paper, orientation, *(size if orientation == "Portrait" else (size[1], size[0])))
-        for paper, size in PAPERS
+        Page(name, orientation, *(size if orientation == "Portrait" else (size[1], size[0])))
+        for name, size in PAPERS
+        if paper is None or name == paper
         for orientation in ORIENTATIONS
     ]
 
@@ -211,12 +223,54 @@ def split_into_bands(natural, minimum, usable):
         if sum(minimum[c] for c in current) > usable:
             return None
     groups.append(current)
+    groups = _balance(natural, minimum, usable, len(groups)) or groups
 
     return [
         Band(tuple(group), tuple(allocate_widths(
             [natural[c] for c in group], [minimum[c] for c in group], usable)))
         for group in groups
     ]
+
+
+def _balance(natural, minimum, usable, count):
+    """Spread columns 1..n-1 over `count` bands as evenly as possible.
+
+    Filling the first band to the brim can leave a last band with a few
+    columns, which wastes its pages. This splits the columns (keeping their
+    order) so the widest band, at natural widths, is as narrow as possible,
+    while every band still fits at minimum widths. Returns None if no split
+    into `count` bands fits.
+    """
+    columns = list(range(1, len(natural)))
+    n = len(columns)
+
+    def fits(i, j):  # columns[i:j] plus the label column
+        return minimum[0] + sum(minimum[c] for c in columns[i:j]) <= usable + 1e-9
+
+    def width(i, j):
+        return natural[0] + sum(natural[c] for c in columns[i:j])
+
+    # best[k][j]: smallest possible widest band when columns[:j] form k bands
+    best = [[math.inf] * (n + 1) for _ in range(count + 1)]
+    split = [[0] * (n + 1) for _ in range(count + 1)]
+    best[0][0] = 0.0
+    for k in range(1, count + 1):
+        for j in range(1, n + 1):
+            for i in range(k - 1, j):
+                if best[k - 1][i] == math.inf or not fits(i, j):
+                    continue
+                widest = max(best[k - 1][i], width(i, j))
+                if widest < best[k][j] - 1e-9:
+                    best[k][j], split[k][j] = widest, i
+    if best[count][n] == math.inf:
+        return None
+
+    groups, j = [], n
+    for k in range(count, 0, -1):
+        i = split[k][j]
+        groups.append([0] + columns[i:j])
+        j = i
+    return groups[::-1]
 
 
 def paginate(row_heights, header_height, body_height, first_page_offset):
@@ -242,7 +296,10 @@ def paginate(row_heights, header_height, body_height, first_page_offset):
 # --- Measuring ---------------------------------------------------------------
 
 def measure_sheet(model):
-    rows = [[cell_text(value) for value in row] for row in model.visible_rows()]
+    rows = [
+        [cell_text(value, fmt) for value, fmt in zip(values, formats)]
+        for values, formats in zip(model.visible_rows(), model.visible_formats())
+    ]
     header, body = rows[0], rows[1:]
     natural, minimum = [], []
     for position, header_text in enumerate(header):
@@ -323,7 +380,7 @@ def _evaluate(measured, page, size, rows):
         wrapped += sum(1 for lines in body_lines for n in lines if n > 1)
         cells += sum(len(lines) for lines in body_lines)
         if exact:
-            starts = paginate(heights, header_height, page.body_height, offset)
+            starts = paginate(heights, header_height, page.body_height - HEIGHT_SAFETY, offset)
             if starts is None:
                 return _rejected(page, size, "a row is taller than the page")
             pages += len(starts)
@@ -343,15 +400,14 @@ def _evaluate(measured, page, size, rows):
         "wrapping": WEIGHTS["wrapping"] * (wrapped / cells if cells else 0.0),
         "empty_width": WEIGHTS["empty_width"] * (1 - sum(bands[0].widths) / page.usable_width),
         "paper": WEIGHTS["paper"] * PAPER_COST[page.paper],
-        "landscape": WEIGHTS["landscape"] * (page.orientation == "Landscape"),
         "short_last_page": WEIGHTS["short_last_page"] * short_last,
     }
     return Candidate(page, size, True, "", tuple(bands), pages, cost, sum(cost.values()))
 
 
 def _estimate_pages(sample_heights, row_count, header_height, page, offset):
-    first = page.body_height - offset - header_height
-    rest = page.body_height - header_height
+    first = page.body_height - HEIGHT_SAFETY - offset - header_height
+    rest = page.body_height - HEIGHT_SAFETY - header_height
     if max(sample_heights, default=0) > min(first, rest):
         return None
     total = sum(sample_heights) / len(sample_heights) * row_count if sample_heights else 0.0
@@ -366,14 +422,19 @@ def _rejected(page, size, reason):
 
 # --- The engine ----------------------------------------------------------------
 
-def plan_layout(model):
-    """Choose the most readable layout for a SheetModel. Returns a PlanResult."""
+def plan_layout(model, paper=None):
+    """Choose the most readable layout for a SheetModel. Returns a PlanResult.
+
+    `paper` ("A4", "Letter", "Legal" or "A3") limits the choice to that
+    paper, still in both orientations. None lets the engine choose.
+    """
+    pages = candidate_pages(paper)
     measured = measure_sheet(model)
     rows = _sample_rows(len(measured.body))
 
     candidates = [
         _evaluate(measured, page, size, rows)
-        for page in candidate_pages()
+        for page in pages
         for size in FONT_SIZES
     ]
     feasible = [c for c in candidates if c.feasible]
@@ -388,22 +449,35 @@ def plan_layout(model):
             cost["extra_paper"] = WEIGHTS["extra_paper"] * (_a4_sheets(candidate) / least - 1)
             candidate = Candidate(candidate.page, candidate.font_size, True, "",
                                   candidate.bands, candidate.pages, cost, sum(cost.values()))
-        priced.append((candidate.total, order, candidate))
-    ranked = tuple(candidate for _, _, candidate in sorted(priced, key=lambda item: item[:2]))
+        priced.append((_rank_key(candidate, order), candidate))
+    ranked = tuple(candidate for _, candidate in sorted(priced, key=lambda item: item[0]))
 
     for candidate in ranked:
         if not candidate.feasible:
             break
         plan = _exact_plan(measured, candidate)
         if plan is not None:
-            return PlanResult(plan, ranked, sampled=len(rows) < len(measured.body))
+            return PlanResult(plan, ranked, sampled=len(rows) < len(measured.body), measured=measured)
     raise LayoutError(_no_layout_message(candidates))
 
 
 def _a4_sheets(candidate):
-    """Paper used, in A4 sheets: an A3 page counts as two."""
+    """Paper used, in A4 sheets: an A3 page counts as two, a Letter page as one."""
     area = candidate.page.width * candidate.page.height
-    return candidate.pages * area / (A4[0] * A4[1])
+    return candidate.pages * max(1.0, area / (A4[0] * A4[1]))
+
+
+def _rank_key(candidate, order):
+    """Sort key: cost first; exact ties by measured factors, never by orientation."""
+    if not candidate.feasible:
+        return (math.inf, math.inf, math.inf, math.inf, order)
+    return (
+        round(candidate.total, 9),
+        _a4_sheets(candidate),
+        candidate.cost.get("wrapping", 0.0),
+        candidate.cost.get("empty_width", 0.0),
+        order,
+    )
 
 
 def _exact_plan(measured, candidate):
@@ -413,7 +487,7 @@ def _exact_plan(measured, candidate):
     for index, band in enumerate(candidate.bands):
         header_lines, header_height, body_lines, heights, offset = _simulate_band(
             measured, band, candidate.page, candidate.font_size, rows, first=index == 0)
-        starts = paginate(heights, header_height, candidate.page.body_height, offset)
+        starts = paginate(heights, header_height, candidate.page.body_height - HEIGHT_SAFETY, offset)
         if starts is None:
             return None
         bands.append(BandPlan(band.columns, band.widths, header_lines, header_height,

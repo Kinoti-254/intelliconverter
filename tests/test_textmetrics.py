@@ -16,10 +16,11 @@ from intelliconverter.textmetrics import (
 )
 
 
-def test_cell_text_matches_what_the_pdf_prints():
+def test_cell_text_is_what_excel_would_show():
     assert cell_text(None) == ""
-    assert cell_text(23.0) == "23.0"
+    assert cell_text(23.0) == "23"
     assert cell_text("Nairobi") == "Nairobi"
+    assert cell_text(1234.5, "#,##0.00") == "1,234.50"
 
 
 def test_text_width_matches_reportlab():
@@ -75,3 +76,15 @@ def test_longest_word_width():
         text_width("cccc", BODY_FONT, 10)
     )
     assert longest_word_width("", BODY_FONT, 10) == 0
+
+
+def test_text_exactly_as_wide_as_the_column_fits_on_one_line():
+    # Regression test: the fast and slow paths compared widths differently,
+    # so at the exact boundary the plan said 1 line and the PDF printed 2.
+    for text in ["Header", "Notes", "Plays guitar", "Metric 07", "Only"]:
+        for size in (7.0, 8.5, 9.5, 10.0, 11.0):
+            for font in (BODY_FONT, HEADER_FONT):
+                exact = text_width(text, font, size)
+                width = (exact + 12) - 12  # how the planner arrives at it
+                assert wrap_text(text, width, font, size) == [text]
+                assert count_lines(text, width, font, size) == 1

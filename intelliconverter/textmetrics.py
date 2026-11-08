@@ -10,13 +10,19 @@ from functools import lru_cache
 
 from reportlab.pdfbase.pdfmetrics import stringWidth
 
+from intelliconverter.numberformat import format_value
+
 BODY_FONT = "Helvetica"
 HEADER_FONT = "Helvetica-Bold"
 
+# Widths within this many points of the limit count as fitting, so that
+# floating-point rounding can't make the plan and the PDF disagree.
+TOLERANCE = 1e-6
 
-def cell_text(value):
-    """The text the PDF prints for a cell value (None becomes empty)."""
-    return str(value) if value is not None else ""
+
+def cell_text(value, number_format="General"):
+    """The text the PDF prints for a cell: the value as Excel would show it."""
+    return format_value(value, number_format)
 
 
 @lru_cache(maxsize=500_000)
@@ -62,14 +68,14 @@ def count_lines(text, max_width, font, size):
     def add(_line):
         counter[0] += 1
 
-    if "\n" not in text and _width_at_1pt(text, font) * size <= max_width:
-        return 1  # fast path: most cells fit on one line
+    if "\n" not in text and _width_at_1pt(text, font) <= (max_width + TOLERANCE) / size:
+        return 1  # fast path: most cells fit on one line (same test as _wrap)
     _wrap(text, max_width, font, size, add)
     return counter[0]
 
 
 def _wrap(text, max_width, font, size, emit):
-    limit = max_width / size  # compare widths at 1 pt
+    limit = (max_width + TOLERANCE) / size  # compare widths at 1 pt
     space = _width_at_1pt(" ", font)
     for paragraph in _paragraph_words(text, font):
         line_words = []

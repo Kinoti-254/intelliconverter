@@ -71,6 +71,36 @@ class TestSampleModel:
         assert model.uncached_formula_count == 0
 
 
+def test_number_formats_are_kept_with_the_values(save_workbook):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["Amount", "Share"])
+    ws.append([1234.5, 0.25])
+    ws["A2"].number_format = "#,##0.00"
+    ws["B2"].number_format = "0%"
+    model = load_sheet(save_workbook(wb))
+    assert model.visible_formats() == [["General", "General"], ["#,##0.00", "0%"]]
+
+
+def test_formats_follow_hidden_rows_and_columns(save_workbook):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append([1, 2, 3])
+    ws.append([4, 5, 6])
+    ws["C1"].number_format = "0.00"
+    ws.column_dimensions["B"].hidden = True
+    ws.row_dimensions[2].hidden = True
+    model = load_sheet(save_workbook(wb))
+    assert model.visible_rows() == [[1, 3]]
+    assert model.visible_formats() == [["General", "0.00"]]
+
+
+def test_a_model_without_formats_means_general():
+    from intelliconverter.reader import ColumnInfo, SheetModel
+    model = SheetModel("S", [ColumnInfo(1, "A", 8.43, False)], frozenset(), [[1]], 0)
+    assert model.visible_formats() == [["General"]]
+
+
 def test_default_width_is_843_when_sheet_has_none(save_workbook):
     wb = openpyxl.Workbook()
     wb.active.append(["a", "b"])
