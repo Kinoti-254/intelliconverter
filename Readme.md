@@ -18,11 +18,13 @@ split across pages, text is too small to read, or content is clipped at the edge
 
 ## How it works (current version)
 
-1. Reads the active sheet and measures all column widths
-2. Converts Excel units to inches
+1. Checks the file and reads one sheet: the cells that hold values (formatting on empty cells is ignored), each column's width, and which rows and columns are hidden
+2. Measures the total width of the visible columns and converts Excel units to inches
 3. Compares the table width against five page layouts (A4 Portrait, A4 Landscape, A3 Portrait, Legal Landscape, A3 Landscape)
 4. Scores each layout by how much of the page width the table fills, and prints a report
-5. Exports `output.pdf` using the highest-scoring layout: a title, a summary line and the sheet as a table with a repeating header row
+5. Exports `output.pdf` using the highest-scoring layout: a title, a summary line and the visible cells as a table with a repeating header row
+
+Hidden rows and columns are left out, as Excel does when printing. Formula cells show the value Excel last saved; formulas in files that were never opened and saved in Excel have no saved value, show blank, and the report warns about them.
 
 Only column widths are used for the layout decision. Row count, page height, font size and cell content are not used yet. In the PDF, every column gets the same width.
 
@@ -55,15 +57,36 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-python main.py
+python main.py [file] [--sheet NAME]
 ```
 
-This analyses `test.xlsx` in the current folder, prints the report and writes
-`output.pdf` to the current folder, replacing any existing `output.pdf`.
+| Command | What it does |
+|---------|--------------|
+| `python main.py` | Analyses `test.xlsx` in the current folder |
+| `python main.py sales.xlsx` | Analyses the active sheet of `sales.xlsx` |
+| `python main.py sales.xlsx --sheet "Q3 Summary"` | Analyses a named sheet |
+| `python main.py --help` | Shows the options |
 
-To analyse another file, change the filename in `main.py`. Note that the PDF
-is currently always built from `test.xlsx`, whichever file is analysed
-(known issue 6a below).
+The report is printed and `output.pdf` is written to the current folder,
+replacing any existing `output.pdf`.
+
+### Errors and limits
+
+Problems you can fix are reported in one line, for example
+`Error: File not found: sales.xlsx` (exit code 1), never as a Python traceback.
+This covers missing files, unsupported or damaged files, password-protected
+files, unknown sheet names, chart sheets, empty sheets, sheets where
+everything is hidden, and an `output.pdf` that is open in another program.
+
+| Limit | Value |
+|-------|-------|
+| File size | 20 MB |
+| Rows (in the used range) | 50,000 |
+| Columns (in the used range) | 100 |
+
+Large files are slow: on a test machine a 50,000 × 20 sheet took about
+20 seconds to read and about 2 minutes in total, mostly spent drawing the
+1,389-page PDF.
 
 Output for the included `test.xlsx`:
 
@@ -111,10 +134,11 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The suite has two kinds of tests:
+The suite has three kinds of tests:
 
-- **Characterisation tests** pin the current behaviour of the console report and the PDF (page size, page count, table contents, column widths), so changes to the code can be checked against it.
-- **Known-defect tests** (`tests/test_known_defects.py`) describe the correct behaviour for each known issue below. They are marked as expected failures (`xfail`) and show as `x` in the output. When a defect is fixed, its test starts passing and pytest flags it, so the marker can be removed.
+- **Behaviour tests** pin what the reader, the command line, the console report and the PDF (page size, page count, table contents, column widths) do, so changes to the code can be checked against them. The report for `test.xlsx` is compared byte for byte with the original program's output.
+- **Regression tests** (named `test_defect_...` outside `test_known_defects.py`) keep fixed defects fixed.
+- **Known-defect tests** (`tests/test_known_defects.py`) describe the correct behaviour for each open issue below. They are marked as expected failures (`xfail`) and show as `x` in the output. When a defect is fixed, its test starts passing and pytest flags it, so it can move to the regression tests.
 
 Tests run in temporary folders, so they never change `test.xlsx` or `output.pdf` in the project folder.
 
@@ -125,19 +149,23 @@ Tests run in temporary folders, so they never change `test.xlsx` or `output.pdf`
 ```
 intelliconverter/
 ├── intelliconverter/          # The package
-│   ├── reader.py              # Opens a workbook
+│   ├── cli.py                 # Command-line options and error messages
+│   ├── errors.py              # Errors reported to the user without a traceback
+│   ├── reader.py              # Checks the file and reads a sheet into a SheetModel
 │   ├── measure.py             # Column widths to inches
 │   ├── layout.py              # Page layouts and the layout score
 │   ├── report.py              # Prints the analysis report, then exports the PDF
 │   └── render.py              # Builds the PDF with ReportLab
 ├── tests/
 │   ├── golden/                # Recorded console output used by the tests
+│   ├── test_cli.py
+│   ├── test_reader.py
 │   ├── test_measure.py
 │   ├── test_layout.py
 │   ├── test_report.py
 │   ├── test_render.py
 │   └── test_known_defects.py
-├── main.py                    # Entry point (python main.py)
+├── main.py                    # Entry point (python main.py [file] [--sheet NAME])
 ├── excel_to_pdf.py            # Kept for existing imports; points to render.py
 ├── test.xlsx                  # Sample spreadsheet
 ├── requirements.txt           # Runtime dependencies
@@ -152,33 +180,33 @@ intelliconverter/
 
 | Capability | Status |
 |------------|--------|
-| Read Excel column widths | Done (active sheet only) |
+| Read a sheet (used range, hidden rows and columns, saved formula values) | Done |
+| Input validation and size limits | Done |
+| Choose the file and sheet | Done (command line) |
 | Convert units to inches | Done |
 | Generate layout candidates | Basic: five fixed page widths |
 | Score and select best layout | Basic: width fit only |
-| Export PDF with chosen layout | Basic: equal column widths, fixed font, always from `test.xlsx` |
+| Export PDF with chosen layout | Basic: equal column widths, fixed font |
 | Conversion report (why this layout was chosen) | Not started |
-| Command-line options | Not started |
 | FastAPI web interface | Planned |
 
 ### Known issues
 
-Each issue has a matching test in `tests/test_known_defects.py`.
+Each open issue has a matching test in `tests/test_known_defects.py`.
+The numbers follow the original technical assessment.
 
-1. Tables wider than every page get no recommendation ("Best layout: None").
-2. Hidden columns are counted in the table width.
-3. Grouped column ranges (for example B:E set to one width) are measured as a single column.
-4. Cell content is ignored, so long text in a narrow column is not accounted for.
-5. Row count and page height do not affect the result.
-6. PDF export:
-    - a. The PDF is always built from `test.xlsx`, not the file being analysed.
-    - b. "Legal Landscape" is rendered on Letter paper (11 in) instead of Legal (14 in).
-    - c. A table too wide for every page produces a PDF labelled "Layout: None" with zero-width columns.
-    - d. Measured column widths are ignored; every column gets the same width.
-    - e. Numbers are printed as Python floats, for example `23.0` instead of `23`.
-7. Formatting on empty cells (for example a number format far to the right) adds empty columns to the width.
-8. Formula cells are read as formula text rather than their values.
-9. A non-Excel file causes a raw error, and the emoji in the output crash consoles that are not UTF-8 (for example Windows output redirected to a file).
+- **1** - Tables wider than every page get no recommendation ("Best layout: None").
+- **4** - Cell content is ignored, so long text in a narrow column is not accounted for.
+- **5** - Row count and page height do not affect the result.
+- **6b** - "Legal Landscape" is rendered on Letter paper (11 in) instead of Legal (14 in).
+- **6c** - A table too wide for every page produces a PDF labelled "Layout: None" with zero-width columns.
+- **6d** - Measured column widths are ignored in the PDF; every column gets the same width.
+- **6e** - Numbers are printed as Python floats, for example `23.0` instead of `23`.
+
+Fixed (each now has a regression test): 2 hidden columns counted in the width,
+3 grouped column ranges measured as one column, 6a PDF always built from
+`test.xlsx`, 7 formatting on empty cells adding width, 8 formulas read as text,
+9 raw errors for bad files and crashes on non-UTF-8 consoles.
 
 ---
 
