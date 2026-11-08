@@ -1,4 +1,9 @@
-"""Measuring sheet dimensions from Excel column widths."""
+"""Measuring sheet dimensions from Excel column widths.
+
+The layout engine sizes columns from their content, so this module is not
+used for layout today. It is kept for the planned "preserve Excel widths"
+mode.
+"""
 
 
 def col_width_to_inches(excel_width):

@@ -65,25 +65,26 @@ def deterministic_pdfs(monkeypatch):
 
 @pytest.fixture
 def captured_tables(monkeypatch):
-    """Record every ReportLab Table that build_pdf creates.
+    """Record every ReportLab Table the renderer creates (one per page).
 
-    Each entry is a dict with the table's data, column widths and repeatRows.
+    Each entry is a dict with the table's data, column widths and row heights.
     The real Table is still built, so the PDF is unaffected.
     """
     tables = []
     real_table = intelliconverter.render.Table
 
-    def recording_table(data, colWidths=None, repeatRows=0, **kwargs):
-        tables.append({"data": data, "col_widths": colWidths, "repeat_rows": repeatRows})
-        return real_table(data, colWidths=colWidths, repeatRows=repeatRows, **kwargs)
+    def recording_table(data, colWidths=None, rowHeights=None, **kwargs):
+        tables.append({"data": data, "col_widths": colWidths, "row_heights": rowHeights})
+        return real_table(data, colWidths=colWidths, rowHeights=rowHeights, **kwargs)
 
     monkeypatch.setattr(intelliconverter.render, "Table", recording_table)
     return tables
 
 
 def read_pdf(path):
-    """Return the page count, page sizes in points, and text of a PDF."""
+    """Return the page count, page sizes in points, and text of a PDF (whole and per page)."""
     reader = PdfReader(str(path))
     sizes = [(float(p.mediabox.width), float(p.mediabox.height)) for p in reader.pages]
-    text = "\n".join(page.extract_text() for page in reader.pages)
-    return {"pages": len(reader.pages), "sizes": sizes, "text": text}
+    page_texts = [page.extract_text() for page in reader.pages]
+    return {"pages": len(reader.pages), "sizes": sizes, "text": "\n".join(page_texts),
+            "page_texts": page_texts}

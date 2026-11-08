@@ -69,44 +69,38 @@ def test_help(capsys):
         cli.main(["--help"])
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
-    assert "--sheet" in out and "file" in out and "--plan" in out
+    assert all(option in out for option in ("--sheet", "--paper", "--explain", "file"))
 
 
-class TestPlanOption:
-    def test_prints_the_plan_and_writes_no_pdf(self, workdir, capsys):
-        assert cli.main(["--plan"]) == 0
+class TestExplainAndPaperOptions:
+    def test_explain_shows_candidates_and_costs_and_still_writes_the_pdf(self, workdir, capsys):
+        assert cli.main(["--explain"]) == 0
         out = capsys.readouterr().out
-        assert "Layout Plan (preview)" in out
-        assert "  Paper   : A4 Portrait\n" in out
-        assert "  Font    : 10 pt\n" in out
-        assert "  Pages   : 1\n" in out
-        assert "<- chosen" in out
-        assert "Preview only" in out
-        assert not (workdir / "output.pdf").exists()
+        assert "<- chosen" in out and "Cost of the chosen layout:" in out
+        assert (workdir / "output.pdf").is_file()
 
-    def test_lists_column_widths_for_each_band(self, workdir, capsys):
-        cli.main(["--plan"])
-        out = capsys.readouterr().out
-        assert "  Band 1  : A " in out and ", D " in out
+    def test_paper_option(self, workdir, capsys):
+        assert cli.main(["--paper", "Letter"]) == 0
+        assert "  Paper   : Letter " in capsys.readouterr().out
+        size = read_pdf(workdir / "output.pdf")["sizes"][0]
+        assert sorted(size) == pytest.approx([612, 792])
 
-    def test_works_with_a_sheet_option(self, two_sheet_book, capsys):
-        assert cli.main([str(two_sheet_book), "--sheet", "Detail", "--plan"]) == 0
-        assert "Sheet   : Detail" in capsys.readouterr().out
+    def test_unknown_paper_is_rejected_by_the_command_line(self, capsys):
+        with pytest.raises(SystemExit) as excinfo:
+            cli.main(["--paper", "B5"])
+        assert excinfo.value.code == 2
+        assert "invalid choice" in capsys.readouterr().err
 
     def test_a_cell_too_long_for_any_page_is_a_friendly_error(self, workdir, capsys):
         wb = openpyxl.Workbook()
         wb.active.append(["Text"])
         wb.active.append(["word " * 6000])
         wb.save(workdir / "huge.xlsx")
-        assert cli.main(["huge.xlsx", "--plan"]) == 1
+        assert cli.main(["huge.xlsx"]) == 1
         assert capsys.readouterr().err.startswith("Error: A cell is too long to fit on one page")
 
-    def test_default_output_is_unchanged_by_the_new_engine(self, workdir, capsys):
-        assert cli.main([]) == 0
-        assert capsys.readouterr().out == GOLDEN_REPORT
 
-
-def test_running_main_py_without_arguments_matches_original(tmp_path):
+def test_running_main_py_without_arguments_matches_the_approved_output(tmp_path):
     shutil.copy(SAMPLE_XLSX, tmp_path / "test.xlsx")
     result = run_main(tmp_path)
     assert result.returncode == 0, result.stderr
@@ -160,5 +154,5 @@ def test_defect_9b_works_on_a_cp1252_console(tmp_path):
     shutil.copy(SAMPLE_XLSX, tmp_path / "test.xlsx")
     result = run_main(tmp_path, encoding="cp1252")
     assert result.returncode == 0, result.stderr
-    assert "Best layout : A4 Portrait" in result.stdout
+    assert "Paper   : A4 Portrait" in result.stdout
     assert (tmp_path / "output.pdf").is_file()

@@ -1,18 +1,20 @@
-"""Command line: python main.py [file] [--sheet NAME] [--plan]."""
+"""Command line: python main.py [file] [--sheet NAME] [--paper PAPER] [--explain]."""
 import argparse
 import sys
 
 from intelliconverter.errors import ConversionError
-from intelliconverter.report import OUTPUT_PDF, analyze, print_plan
+from intelliconverter.planner import PAPERS
+from intelliconverter.report import OUTPUT_PDF, analyze
 
 DEFAULT_FILE = "test.xlsx"
+AUTO = "auto"
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="python main.py",
         description=(
-            "Analyse an Excel sheet, recommend a page layout and export "
+            "Choose the most readable page layout for an Excel sheet and export "
             f"{OUTPUT_PDF} to the current folder."
         ),
     )
@@ -24,9 +26,15 @@ def build_parser():
     )
     parser.add_argument("--sheet", help="sheet name (default: the active sheet)")
     parser.add_argument(
-        "--plan",
+        "--paper",
+        choices=[AUTO] + [name for name, _ in PAPERS],
+        default=AUTO,
+        help="paper size (default: auto, which prefers A4); both orientations are compared",
+    )
+    parser.add_argument(
+        "--explain",
         action="store_true",
-        help="preview the new layout engine's plan instead (no PDF is written)",
+        help="also show the best alternatives and why this layout was chosen",
     )
     return parser
 
@@ -35,11 +43,9 @@ def main(argv=None):
     """Run the command line. Returns the exit code: 0 on success, 1 on a user error."""
     args = build_parser().parse_args(argv)
     _avoid_encoding_crashes()
+    paper = None if args.paper == AUTO else args.paper
     try:
-        if args.plan:
-            print_plan(args.file, sheet=args.sheet)
-        else:
-            analyze(args.file, sheet=args.sheet)
+        analyze(args.file, sheet=args.sheet, paper=paper, explain=args.explain)
     except ConversionError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1

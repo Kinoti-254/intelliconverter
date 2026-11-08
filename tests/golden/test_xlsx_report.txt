@@ -1,31 +1,17 @@
 
 ================================================
-  IntelliConverter — Layout Analysis Report
+  IntelliConverter — Layout Report
 ================================================
   Sheet   : Sheet1
   Columns : 4
   Rows    : 3
-  Width   : 4.84 inches
 ================================================
-  Layout               Fits    Scale   Score
-  ------------------------------------------
-  A4 Portrait          ✅         63%      38
-  A4 Landscape         ✅         45%      27
-  A3 Portrait          ✅         41%      25
-  Legal Landscape      ✅         37%      22
-  A3 Landscape         ✅         29%      18
-  ------------------------------------------
-
-  ✨ Best layout : A4 Portrait
-  📐 Scale       : 63%
-  🏆 Score       : 38/100
-
+  Paper   : A4 Portrait
+  Font    : 10 pt
+  Parts   : 1
+  Pages   : 1
+  Part 1  : A 0.54, B 0.44, C 0.78, D 0.91 (inches)
 ================================================
-
 
 ✅ PDF saved to: output.pdf
-   Layout  : A4 Portrait
-   Scale   : 63%
-   Rows    : 3
-   Columns : 4
 
