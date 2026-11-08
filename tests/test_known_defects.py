@@ -10,12 +10,13 @@ PDF defects). Fixed in Phase 1, now regression tests:
     2, 3, 7, 8 -> test_reader.py
     6a         -> test_report.py
     9a, 9b     -> test_cli.py
-Still open: 1, 4, 5 (layout engine, Phase 2) and 6b-6e (PDF, Phase 3).
+Fixed in Phase 2a: 6b -> test_render.py.
+Still open: 1, 4, 5 (fixed in the new layout engine, which becomes the
+default in Phase 2b) and 6c-6e (PDF).
 """
 import openpyxl
 import pytest
 from openpyxl.utils import get_column_letter
-from reportlab.lib.pagesizes import LEGAL, landscape
 
 from intelliconverter import render
 from intelliconverter.measure import col_width_to_inches, get_total_table_width
@@ -74,12 +75,6 @@ def test_defect_5_tall_sheet_is_analysed_differently(workdir, save_workbook, cap
 
 
 # --- PDF export (Phase 3) ---------------------------------------------------
-
-@pytest.mark.xfail(reason="Defect 6b: Legal Landscape is rendered on Letter paper")
-def test_defect_6b_legal_landscape_uses_legal_paper():
-    # Legal is 8.5 x 14 in; Letter is 8.5 x 11 in.
-    assert render.get_page_size("Legal Landscape") == landscape(LEGAL)
-
 
 @pytest.mark.xfail(reason="Defect 6c: a table too wide for every page produces zero-width columns")
 def test_defect_6c_wide_table_pdf_is_usable(workdir, captured_tables, capsys):

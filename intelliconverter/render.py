@@ -4,7 +4,7 @@ Since Phase 1 the PDF is drawn from a SheetModel: hidden rows and columns
 are left out, and formula cells show the value Excel last saved.
 """
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4, A3, LETTER, landscape, portrait
+from reportlab.lib.pagesizes import A4, A3, LEGAL, landscape, portrait
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import inch
@@ -19,7 +19,7 @@ PAGE_SIZES = {
     "A4 Landscape":     landscape(A4),
     "A3 Portrait":      portrait(A3),
     "A3 Landscape":     landscape(A3),
-    "Legal Landscape":  landscape(LETTER),
+    "Legal Landscape":  landscape(LEGAL),
 }
 
 

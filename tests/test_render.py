@@ -11,7 +11,7 @@ import time
 import openpyxl
 import pytest
 from openpyxl.utils import get_column_letter
-from reportlab.lib.pagesizes import A3, A4, landscape, portrait
+from reportlab.lib.pagesizes import A3, A4, LEGAL, landscape, portrait
 
 import excel_to_pdf
 from intelliconverter import render
@@ -54,8 +54,9 @@ class TestPageSizes:
         assert render.get_page_size("Something else") == landscape(A4)
         assert render.get_page_size(None) == landscape(A4)
 
-    # "Legal Landscape" is deliberately not pinned here: it maps to Letter
-    # paper today, which is defect 6b in test_known_defects.py.
+    def test_defect_6b_legal_landscape_uses_legal_paper(self):
+        # Regression test: before Phase 2a it used Letter paper (11 in, not 14 in).
+        assert render.get_page_size("Legal Landscape") == landscape(LEGAL)
 
     def test_every_scored_layout_has_a_page_size(self):
         assert {name for name, _ in LAYOUTS} == set(render.PAGE_SIZES)
