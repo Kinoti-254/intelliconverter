@@ -390,3 +390,110 @@ def test_load_active_sheet_still_returns_a_worksheet(save_workbook):
     wb.create_sheet("Second")
     wb.active = 1
     assert reader.load_active_sheet(save_workbook(wb)).title == "Second"
+
+
+# --- Several sheets -----------------------------------------------------------
+
+from intelliconverter.reader import load_workbook_sheets  # noqa: E402
+
+
+def _workbook(save_workbook):
+    """Visible data sheets, plus a hidden, a very hidden, an empty and a chart sheet."""
+    wb = openpyxl.Workbook()
+    sales = wb.active
+    sales.title = "Sales"
+    sales.append(["Region", "Total"])
+    sales.append(["North", 10])
+    hidden = wb.create_sheet("Old")
+    hidden["A1"] = "old data"
+    hidden.sheet_state = "hidden"
+    very = wb.create_sheet("Secret")
+    very["A1"] = "secret"
+    very.sheet_state = "veryHidden"
+    wb.create_sheet("Blank")
+    costs = wb.create_sheet("Costs")
+    costs.append(["Item", "Cost"])
+    costs.append(["Rent", 500])
+    chart_sheet = wb.create_chartsheet("Chart")
+    chart = BarChart()
+    chart.add_data(Reference(sales, min_col=2, min_row=1, max_row=2))
+    chart_sheet.add_chart(chart)
+    return save_workbook(wb, "book.xlsx")
+
+
+class TestWorkbookSheets:
+    def test_all_visible_worksheets_in_workbook_order(self, save_workbook):
+        result = load_workbook_sheets(_workbook(save_workbook))
+        assert [m.title for m in result.models] == ["Sales", "Costs"]
+
+    def test_sheets_that_cannot_be_converted_are_skipped_with_a_reason(self, save_workbook):
+        result = load_workbook_sheets(_workbook(save_workbook))
+        assert result.skipped == [
+            ("Old", "hidden sheet"),
+            ("Secret", "hidden sheet"),
+            ("Blank", "empty"),
+            ("Chart", "chart sheet"),
+        ]
+
+    def test_named_sheets_in_the_order_given(self, save_workbook):
+        result = load_workbook_sheets(_workbook(save_workbook), ["Costs", "Sales"])
+        assert [m.title for m in result.models] == ["Costs", "Sales"]
+        assert result.skipped == []
+
+    def test_a_named_hidden_sheet_is_converted(self, save_workbook):
+        result = load_workbook_sheets(_workbook(save_workbook), ["Old"])
+        assert result.models[0].visible_rows() == [["old data"]]
+
+    def test_repeated_names_are_converted_once(self, save_workbook):
+        result = load_workbook_sheets(_workbook(save_workbook), ["Sales", "Sales"])
+        assert [m.title for m in result.models] == ["Sales"]
+
+    @pytest.mark.parametrize(
+        "name, message",
+        [
+            ("Nope", "No sheet named 'Nope'"),
+            ("Blank", "Sheet 'Blank' is empty"),
+            ("Chart", "'Chart' is a chart sheet"),
+        ],
+    )
+    def test_a_named_sheet_that_cannot_be_converted_is_an_error(self, save_workbook, name, message):
+        with pytest.raises(InputError) as excinfo:
+            load_workbook_sheets(_workbook(save_workbook), ["Sales", name])
+        assert message in str(excinfo.value)
+
+    def test_a_sheet_with_everything_hidden_is_skipped_when_not_named(self, save_workbook):
+        wb = openpyxl.Workbook()
+        wb.active["A1"] = "keep"
+        other = wb.create_sheet("AllHidden")
+        other["A1"] = "x"
+        other.column_dimensions["A"].hidden = True
+        result = load_workbook_sheets(save_workbook(wb))
+        assert [m.title for m in result.models] == ["Sheet"]
+        assert result.skipped == [("AllHidden", "nothing visible")]
+
+    def test_the_cell_limit_applies_to_all_selected_sheets_together(self, monkeypatch, save_workbook):
+        # Sales and Costs are 4 cells each: 8 in total.
+        path = _workbook(save_workbook)
+        monkeypatch.setattr(reader, "MAX_CELLS", 7)
+        with pytest.raises(InputError) as excinfo:
+            load_workbook_sheets(path)
+        assert "8 cells in total" in str(excinfo.value) and "the limit is 7" in str(excinfo.value)
+        monkeypatch.setattr(reader, "MAX_CELLS", 8)
+        assert len(load_workbook_sheets(path).models) == 2
+
+    def test_the_file_is_opened_once_in_each_mode(self, monkeypatch, save_workbook):
+        path = _workbook(save_workbook)
+        opened = []
+        real_open = reader._open_workbook
+
+        def recording_open(p, shown, **options):
+            opened.append(options)
+            return real_open(p, shown, **options)
+
+        monkeypatch.setattr(reader, "_open_workbook", recording_open)
+        load_workbook_sheets(path)
+        assert opened == [{"read_only": True}, {"data_only": True}]
+
+    def test_load_sheet_still_reads_the_active_sheet(self, save_workbook):
+        path = _workbook(save_workbook)
+        assert load_sheet(path).title == "Sales"

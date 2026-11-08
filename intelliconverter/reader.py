@@ -1,8 +1,11 @@
-"""Opening workbooks and turning one sheet into a SheetModel.
+"""Opening workbooks and turning sheets into SheetModels.
 
-load_sheet() checks the file, finds the used range (the cells that actually
-hold values), applies the size limits and returns a SheetModel. Every
-problem a user can cause is raised as InputError with a plain message.
+load_sheet() reads one sheet; load_workbook_sheets() reads several (by
+default every visible worksheet). Both check the file, find each sheet's
+used range (the cells that actually hold values), apply the size limits and
+build SheetModels. The file is opened once in openpyxl's fast read-only mode
+(to scan) and once in full mode (to read), however many sheets are read.
+Every problem a user can cause is raised as InputError with a plain message.
 """
 import zipfile
 from dataclasses import dataclass, field
@@ -14,7 +17,8 @@ from openpyxl.utils.exceptions import InvalidFileException
 
 from intelliconverter.errors import InputError
 
-__all__ = ["ColumnInfo", "InputError", "SheetModel", "load_active_sheet", "load_sheet"]
+__all__ = ["ColumnInfo", "InputError", "SheetModel", "WorkbookSheets",
+           "load_active_sheet", "load_sheet", "load_workbook_sheets"]
 
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_ROWS = 50_000
@@ -90,6 +94,14 @@ class SheetModel:
         ]
 
 
+@dataclass
+class WorkbookSheets:
+    """Sheets read from one workbook, in conversion order."""
+
+    models: list    # SheetModel per converted sheet
+    skipped: list   # (sheet name, reason) for sheets left out, in workbook order
+
+
 def load_active_sheet(filepath):
     """Open an Excel workbook and return its active worksheet.
 
@@ -101,35 +113,106 @@ def load_active_sheet(filepath):
 
 def load_sheet(filepath, sheet=None):
     """Read one sheet (the active one unless `sheet` names another) into a SheetModel."""
+    return _load(filepath, [sheet]).models[0]
+
+
+def load_workbook_sheets(filepath, names=None):
+    """Read several sheets. Returns WorkbookSheets.
+
+    names=None reads every visible worksheet, in workbook order, and skips
+    (with a reason) hidden sheets, chart sheets, empty sheets and sheets
+    whose rows or columns are all hidden. Named sheets are read in the
+    order given (repeats once); one that can't be read is an error, even if
+    it is hidden.
+    """
+    if names is None:
+        return _load(filepath, None)
+    return _load(filepath, list(dict.fromkeys(names)))
+
+
+def _load(filepath, names):
+    """names: a list of sheet names (None in it means the active sheet), or None for all."""
     path = Path(filepath)
     shown = str(filepath)
     _check_file(path, shown)
+    strict = names is not None
 
-    # The scan also enforces the size limits, before the slow full load.
-    sheet_name, last_row, last_col, formula_cells = _scan_used_range(path, shown, sheet)
+    scans, skipped, order = _scan_sheets(path, shown, names)
+    models = []
+    if scans:
+        wb = _open_workbook(path, shown, data_only=True)
+        try:
+            for name, last_row, last_col, formula_cells in scans:
+                model = _build_model(wb[name], last_row, last_col, formula_cells)
+                if model.visible_columns and model.visible_row_count:
+                    models.append(model)
+                elif strict:
+                    raise InputError(
+                        f"Sheet '{name}' has no visible data: all of its rows or columns are hidden."
+                    )
+                else:
+                    skipped.append((name, "nothing visible"))
+        finally:
+            wb.close()
+    skipped.sort(key=lambda item: order[item[0]])
+    return WorkbookSheets(models, skipped)
 
-    wb = _open_workbook(path, shown, data_only=True)
+
+def _scan_sheets(path, shown, names):
+    """Scan each sheet to convert in read-only mode, enforcing the limits.
+
+    Returns (scans, skipped, order): one (name, last_row, last_col,
+    formula_cells) per sheet to read, the sheets skipped so far, and each
+    sheet's position in the workbook.
+    """
+    wb = _open_workbook(path, shown, read_only=True)
     try:
-        ws = wb[sheet_name]
-        columns = _read_columns(ws, last_col)
-        hidden_rows = frozenset(
-            number for number, dim in ws.row_dimensions.items()
-            if dim.hidden and number <= last_row
-        )
-        cells, formats = [], []
-        for row in ws.iter_rows(min_row=1, max_row=last_row, max_col=last_col):
-            cells.append([cell.value for cell in row])
-            formats.append([cell.number_format for cell in row])
+        order = {name: index for index, name in enumerate(wb.sheetnames)}
+        scans, skipped = [], []
+        total_cells = 0
+        for target in (wb.sheetnames if names is None else names):
+            if names is None:
+                ws = wb[target]
+                reason = _skip_reason(ws)
+                if reason:
+                    skipped.append((target, reason))
+                    continue
+            else:
+                ws = _pick_sheet(wb, target, shown)
+            scan = _scan_used_range(ws, total_cells)
+            if scan is None:
+                if names is not None:
+                    raise InputError(f"Sheet '{ws.title}' is empty.")
+                skipped.append((ws.title, "empty"))
+                continue
+            last_row, last_col, formula_cells = scan
+            total_cells += last_row * last_col
+            scans.append((ws.title, last_row, last_col, formula_cells))
+        return scans, skipped, order
     finally:
         wb.close()
 
+
+def _skip_reason(ws):
+    if not hasattr(ws, "iter_rows"):
+        return "chart sheet"
+    if ws.sheet_state != "visible":
+        return "hidden sheet"
+    return None
+
+
+def _build_model(ws, last_row, last_col, formula_cells):
+    columns = _read_columns(ws, last_col)
+    hidden_rows = frozenset(
+        number for number, dim in ws.row_dimensions.items()
+        if dim.hidden and number <= last_row
+    )
+    cells, formats = [], []
+    for row in ws.iter_rows(min_row=1, max_row=last_row, max_col=last_col):
+        cells.append([cell.value for cell in row])
+        formats.append([cell.number_format for cell in row])
     uncached = sum(1 for row, col in formula_cells if cells[row - 1][col - 1] is None)
-    model = SheetModel(sheet_name, columns, hidden_rows, cells, uncached, formats)
-    if not model.visible_columns or model.visible_row_count == 0:
-        raise InputError(
-            f"Sheet '{sheet_name}' has no visible data: all of its rows or columns are hidden."
-        )
-    return model
+    return SheetModel(ws.title, columns, hidden_rows, cells, uncached, formats)
 
 
 def _check_file(path, shown):
@@ -203,51 +286,54 @@ def _pick_sheet(wb, sheet, shown):
     return ws
 
 
-def _scan_used_range(path, shown, sheet):
+def _scan_used_range(ws, cells_before):
     """Find the last row and column holding a value, and where formulas are.
 
-    Uses openpyxl's fast read-only mode. Formatting on empty cells is ignored.
-    The used range only grows as the scan goes on, so it stops as soon as a
-    size limit is passed instead of reading the rest of a huge sheet.
+    Returns (last_row, last_col, formula_cells), or None for an empty sheet.
+    Formatting on empty cells is ignored. The used range only grows as the
+    scan goes on, so it stops as soon as a size limit is passed (counting
+    `cells_before` from sheets already scanned) instead of reading the rest.
     """
-    wb = _open_workbook(path, shown, read_only=True)
-    try:
-        ws = _pick_sheet(wb, sheet, shown)
-        # Some programs write a wrong size into the file; without this,
-        # read-only mode trusts it and can silently skip cells.
-        ws.reset_dimensions()
+    # Some programs write a wrong size into the file; without this,
+    # read-only mode trusts it and can silently skip cells.
+    ws.reset_dimensions()
 
-        last_row = last_col = 0
-        formula_cells = []
-        for row_number, row in enumerate(ws.iter_rows(values_only=True), start=1):
-            for col_number, value in enumerate(row, start=1):
-                if value is None or value == "":
-                    continue
-                if row_number > last_row or col_number > last_col:
-                    last_row = row_number
-                    last_col = max(last_col, col_number)
-                    _check_limits(last_row, last_col)
-                if isinstance(value, str) and value.startswith("="):
-                    formula_cells.append((row_number, col_number))
+    last_row = last_col = 0
+    formula_cells = []
+    for row_number, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        for col_number, value in enumerate(row, start=1):
+            if value is None or value == "":
+                continue
+            if row_number > last_row or col_number > last_col:
+                last_row = row_number
+                last_col = max(last_col, col_number)
+                _check_limits(ws.title, last_row, last_col, cells_before)
+            if isinstance(value, str) and value.startswith("="):
+                formula_cells.append((row_number, col_number))
 
-        if last_row == 0:
-            raise InputError(f"Sheet '{ws.title}' is empty.")
-        return ws.title, last_row, last_col, formula_cells
-    finally:
-        wb.close()
+    if last_row == 0:
+        return None
+    return last_row, last_col, formula_cells
 
 
-def _check_limits(rows, columns):
+def _check_limits(name, rows, columns, cells_before=0):
     """Called during the scan with the used range so far, hence 'at least'."""
     if rows > MAX_ROWS:
-        raise InputError(f"The sheet has at least {rows:,} rows; the limit is {MAX_ROWS:,}.")
+        raise InputError(f"Sheet '{name}' has at least {rows:,} rows; the limit is {MAX_ROWS:,}.")
     if columns > MAX_COLUMNS:
-        raise InputError(f"The sheet has at least {columns:,} columns; the limit is {MAX_COLUMNS:,}.")
+        raise InputError(
+            f"Sheet '{name}' has at least {columns:,} columns; the limit is {MAX_COLUMNS:,}."
+        )
     cells = rows * columns
     if cells > MAX_CELLS:
         raise InputError(
-            f"The sheet has at least {cells:,} cells ({rows:,} rows x {columns:,} columns); "
+            f"Sheet '{name}' has at least {cells:,} cells ({rows:,} rows x {columns:,} columns); "
             f"the limit is {MAX_CELLS:,}."
+        )
+    if cells_before + cells > MAX_CELLS:
+        raise InputError(
+            f"The selected sheets have at least {cells_before + cells:,} cells in total; "
+            f"the limit is {MAX_CELLS:,}. Convert fewer sheets with --sheet."
         )
 
 
