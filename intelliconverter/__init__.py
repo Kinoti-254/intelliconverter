@@ -5,7 +5,9 @@ Modules:
     errors   - errors reported to the user without a traceback
     reader   - checks the file and reads a sheet into a SheetModel
     measure  - converts Excel column widths into inches
-    layout   - page-size candidates and the layout score
+    layout   - current page-size candidates and the layout score
+    textmetrics - measures and wraps text in the PDF font
+    planner  - new layout engine (previewed with --plan)
     report   - prints the layout analysis report, then exports the PDF
     render   - builds the PDF with ReportLab
 """

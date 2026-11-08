@@ -69,7 +69,41 @@ def test_help(capsys):
         cli.main(["--help"])
     assert excinfo.value.code == 0
     out = capsys.readouterr().out
-    assert "--sheet" in out and "file" in out
+    assert "--sheet" in out and "file" in out and "--plan" in out
+
+
+class TestPlanOption:
+    def test_prints_the_plan_and_writes_no_pdf(self, workdir, capsys):
+        assert cli.main(["--plan"]) == 0
+        out = capsys.readouterr().out
+        assert "Layout Plan (preview)" in out
+        assert "  Paper   : A4 Portrait\n" in out
+        assert "  Font    : 10 pt\n" in out
+        assert "  Pages   : 1\n" in out
+        assert "<- chosen" in out
+        assert "Preview only" in out
+        assert not (workdir / "output.pdf").exists()
+
+    def test_lists_column_widths_for_each_band(self, workdir, capsys):
+        cli.main(["--plan"])
+        out = capsys.readouterr().out
+        assert "  Band 1  : A " in out and ", D " in out
+
+    def test_works_with_a_sheet_option(self, two_sheet_book, capsys):
+        assert cli.main([str(two_sheet_book), "--sheet", "Detail", "--plan"]) == 0
+        assert "Sheet   : Detail" in capsys.readouterr().out
+
+    def test_a_cell_too_long_for_any_page_is_a_friendly_error(self, workdir, capsys):
+        wb = openpyxl.Workbook()
+        wb.active.append(["Text"])
+        wb.active.append(["word " * 6000])
+        wb.save(workdir / "huge.xlsx")
+        assert cli.main(["huge.xlsx", "--plan"]) == 1
+        assert capsys.readouterr().err.startswith("Error: A cell is too long to fit on one page")
+
+    def test_default_output_is_unchanged_by_the_new_engine(self, workdir, capsys):
+        assert cli.main([]) == 0
+        assert capsys.readouterr().out == GOLDEN_REPORT
 
 
 def test_running_main_py_without_arguments_matches_original(tmp_path):

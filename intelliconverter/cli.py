@@ -1,9 +1,9 @@
-"""Command line: python main.py [file] [--sheet NAME]."""
+"""Command line: python main.py [file] [--sheet NAME] [--plan]."""
 import argparse
 import sys
 
 from intelliconverter.errors import ConversionError
-from intelliconverter.report import OUTPUT_PDF, analyze
+from intelliconverter.report import OUTPUT_PDF, analyze, print_plan
 
 DEFAULT_FILE = "test.xlsx"
 
@@ -23,6 +23,11 @@ def build_parser():
         help=f"the .xlsx file to convert (default: {DEFAULT_FILE})",
     )
     parser.add_argument("--sheet", help="sheet name (default: the active sheet)")
+    parser.add_argument(
+        "--plan",
+        action="store_true",
+        help="preview the new layout engine's plan instead (no PDF is written)",
+    )
     return parser
 
 
@@ -31,7 +36,10 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     _avoid_encoding_crashes()
     try:
-        analyze(args.file, sheet=args.sheet)
+        if args.plan:
+            print_plan(args.file, sheet=args.sheet)
+        else:
+            analyze(args.file, sheet=args.sheet)
     except ConversionError as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
